@@ -45,7 +45,6 @@ UMBRAL_POR_PERSONA = 2_100_000  # COP ida y vuelta por persona = "precio bueno"
 BAJADA_FUERTE = 0.05  # 5% por debajo del mínimo visto también cuenta como bueno
 MIN_REVISIONES_PARA_BAJADA = 4  # no comparar contra un historial muy corto
 REALERTA_SI_BAJA = 0.02  # tras avisar, solo vuelve a avisar si baja otro 2%
-ULTIMO_DIA_REVISION = date(2026, 12, 19)
 # ------------------------------------------------
 
 # Primero tus fechas, después las cercanas.
@@ -58,6 +57,8 @@ COMBINACIONES = sorted(
     ),
     key=lambda c: (c != FECHAS_IDEALES, c),
 )
+# Se revisa hasta el día antes de la última salida posible; las salidas que ya pasaron se saltan.
+ULTIMO_DIA_REVISION = max(salida for salida, _ in COMBINACIONES) - timedelta(days=1)
 
 CARPETA = Path(__file__).resolve().parent
 ESTADO = CARPETA / "estado.json"
@@ -216,16 +217,21 @@ def link_reserva_google(page, v):
         return None
 
 
-def es_bueno(mejor, estado):
-    """Devuelve el motivo si el precio vale la pena, o None."""
-    por_persona = mejor["total"] // PASAJEROS
-    revisiones = estado["revisiones"]
+def motivo_umbral(total):
+    """Motivo si el precio total (para los 4) queda debajo del umbral por persona, o None."""
+    por_persona = total // PASAJEROS
     if por_persona <= UMBRAL_POR_PERSONA:
         return f"{cop(por_persona)} por persona, debajo de tu umbral de {cop(UMBRAL_POR_PERSONA)}"
+    return None
+
+
+def motivo_bajada(total_desde, estado):
+    """Motivo si el precio "desde" cae fuerte contra el historial, que también guarda precios "desde"."""
+    revisiones = estado["revisiones"]
     if len(revisiones) >= MIN_REVISIONES_PARA_BAJADA:
         minimo = min(r["mejor"] for r in revisiones)
-        if mejor["total"] <= minimo * (1 - BAJADA_FUERTE):
-            pct = round((1 - mejor["total"] / minimo) * 100)
+        if total_desde <= minimo * (1 - BAJADA_FUERTE):
+            pct = round((1 - total_desde / minimo) * 100)
             return f"{pct}% más barato que el mínimo visto ({cop(minimo)})"
     return None
 
@@ -468,6 +474,8 @@ def main():
     with sync_playwright() as p:
         browser, page = abrir_navegador(p)
         for salida, regreso in COMBINACIONES:
+            if salida <= ahora.date():
+                continue
             try:
                 encontrados, _, bloqueado = buscar(page, salida, regreso)
             except Exception as e:  # una fecha que falla no tumba toda la revisión
@@ -479,12 +487,15 @@ def main():
             vuelos += encontrados
             page.wait_for_timeout(random.randint(2000, 6000))  # ir despacio
 
-        alerta = resumen = False
+        alerta = resumen = confirmado = False
+        motivo = precio_alerta = None
         if vuelos:
             vuelos.sort(key=lambda v: v["total"])
             mejor = vuelos[0]
-            motivo = es_bueno(mejor, estado)
             ultima = estado["ultima_alerta"]
+            # Filtro rápido con el precio "desde" (casi siempre igual o menor que el real):
+            # si ni así vale la pena, no hace falta abrir las páginas de reserva.
+            motivo = motivo_umbral(mejor["total"]) or motivo_bajada(mejor["total"], estado)
             alerta = bool(motivo) and (ultima is None or mejor["total"] <= ultima * (1 - REALERTA_SI_BAJA))
             resumen = forzar_resumen or (
                 ahora.weekday() == 0 and ahora.hour >= 8 and estado["ultimo_resumen"] != hoy
@@ -494,14 +505,16 @@ def main():
                 opciones = opciones_para_reservar(vuelos)
                 for v in opciones:
                     completar_reserva(page, v)
-                # La alerta se confirma con el precio real que da la aerolínea,
-                # que puede ser más alto que el "desde" de la búsqueda.
                 reales = [v["precio_real"] for v in opciones if v.get("precio_real")]
-                if alerta and reales:
-                    motivo = es_bueno({**mejor, "total": min(reales)}, estado)
-                    alerta = bool(motivo)
+                confirmado = bool(reales)
+                precio_alerta = min(reales) if reales else mejor["total"]
+                if alerta:
+                    # El umbral se confirma con el precio real de la aerolínea; y para no repetir
+                    # la misma alerta, se compara contra la última con ese mismo precio.
+                    motivo = motivo_umbral(precio_alerta) or motivo_bajada(mejor["total"], estado)
+                    alerta = bool(motivo) and (ultima is None or precio_alerta <= ultima * (1 - REALERTA_SI_BAJA))
                     if not alerta:
-                        print(f"Alerta descartada: precio real en aerolínea {cop(min(reales))}")
+                        print(f"Alerta descartada: precio real en aerolínea {cop(precio_alerta)}")
         browser.close()
 
     # Cada aviso lleva los cambios de estado que solo se guardan si de verdad sale,
@@ -517,12 +530,15 @@ def main():
     else:
         mejor, cuerpo = detalle(vuelos, estado)
         if alerta:
-            precio = min([v["precio_real"] for v in vuelos if v.get("precio_real")] or [mejor["total"]])
+            if confirmado:
+                asunto = f"🔥 ¡Precio bueno! BOG→MCO directo {cop(precio_alerta)} COP (4 personas)"
+            else:  # no se pudo leer el precio en la aerolínea: se avisa igual, pero sin prometer
+                asunto = f"🔥 Posible precio bueno (sin confirmar): BOG→MCO desde {cop(precio_alerta)} COP"
             avisos.append((
-                f"🔥 ¡Precio bueno! BOG→MCO directo {cop(precio)} COP (4 personas)",
+                asunto,
                 f"Por qué te aviso: {motivo}.\n\n{cuerpo}",
                 texto_recordatorio(vuelos, motivo),
-                {"ultima_alerta": precio},
+                {"ultima_alerta": precio_alerta},
             ))
         if resumen:
             intro = (
