@@ -371,18 +371,34 @@ def texto_recordatorio(vuelos, motivo=None):
 
 def enviar_gmail(asunto, cuerpo):
     """Envía desde tu Gmail a ti mismo con una contraseña de aplicación (secretos de GitHub)."""
-    usuario = os.environ.get("GMAIL_USER", "")
+    usuario = os.environ.get("GMAIL_USER", "").strip()
+    clave = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()  # Google la muestra con espacios
+    if "@" not in usuario or len(clave) != 16:
+        print(
+            f"Revisa los secretos: GMAIL_USER {'parece un correo' if '@' in usuario else 'NO parece un correo'}, "
+            f"GMAIL_APP_PASSWORD tiene {len(clave)} caracteres sin espacios (deben ser 16)."
+        )
+        return False
     msg = EmailMessage()
     msg["Subject"], msg["From"], msg["To"] = asunto, usuario, os.environ.get("EMAIL_TO") or usuario
     msg.set_content(cuerpo)
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
-            s.login(usuario, os.environ.get("GMAIL_APP_PASSWORD", ""))
-            s.send_message(msg)
-        return True
-    except Exception as e:
-        print(f"No se pudo enviar por Gmail: {type(e).__name__}: {e}")
-        return False
+    for puerto in (465, 587):  # si un puerto falla, se prueba el otro
+        paso = "conectar"
+        try:
+            if puerto == 465:
+                s = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30)
+            else:
+                s = smtplib.SMTP("smtp.gmail.com", 587, timeout=30)
+                s.starttls()
+            with s:
+                paso = "iniciar sesión"
+                s.login(usuario, clave)
+                paso = "enviar"
+                s.send_message(msg)
+            return True
+        except Exception as e:
+            print(f"Gmail (puerto {puerto}) falló al {paso}: {type(e).__name__}: {e}")
+    return False
 
 
 def avisar(asunto, cuerpo_correo, texto_corto):
