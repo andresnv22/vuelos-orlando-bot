@@ -38,6 +38,7 @@ jobs:
           AVISAR_POR: gmail
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}  # opcional: a dónde llegan los avisos (si no, a GMAIL_USER)
           TZ: America/Bogota
           MODO: ${{ inputs.modo }}
         run: |
