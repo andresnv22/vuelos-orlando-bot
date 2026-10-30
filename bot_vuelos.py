@@ -599,16 +599,30 @@ def main():
                 opciones = opciones_para_reservar(vuelos)
                 for v in opciones:
                     completar_reserva(page, v)
+                for v in opciones:
+                    real = cop(v["precio_real"]) if v.get("precio_real") else "no se pudo leer"
+                    print(f"  {v['aerolinea']} {v['salida']} → {v['regreso']}: desde {cop(v['total'])}, real {real}")
+                # Cada opción se juzga con su propio precio: si la más barata no mostró su precio real,
+                # no se descarta por el precio real (más caro) de otra opción.
                 reales = [v["precio_real"] for v in opciones if v.get("precio_real")]
-                confirmado = bool(reales)
-                precio_alerta = min(reales) if reales else mejor["total"]
+                bajo_tope = [r for r in reales if motivo_umbral(r)]
+                sin_leer = [v["total"] for v in opciones if not v.get("precio_real") and motivo_umbral(v["total"])]
+                if bajo_tope:
+                    confirmado, precio_alerta = True, min(bajo_tope)
+                elif sin_leer:
+                    confirmado, precio_alerta = False, min(sin_leer)
+                elif reales:
+                    confirmado, precio_alerta = True, min(reales)
+                else:
+                    confirmado, precio_alerta = False, mejor["total"]
                 if alerta:
                     # El umbral se confirma con el precio real de la aerolínea; y para no repetir
                     # la misma alerta, se compara contra la última con ese mismo precio.
                     motivo = motivo_umbral(precio_alerta) or motivo_bajada(mejor["total"], estado)
                     alerta = bool(motivo) and (ultima is None or precio_alerta <= ultima * (1 - REALERTA_SI_BAJA))
                     if not alerta:
-                        print(f"Alerta descartada: precio real en aerolínea {cop(precio_alerta)}")
+                        razon = "ya se avisó a ese precio" if motivo else "no está bajo el tope"
+                        print(f"Alerta descartada ({razon}): {cop(precio_alerta)}")
         browser.close()
 
     # Cada aviso lleva los cambios de estado que solo se guardan si de verdad sale,

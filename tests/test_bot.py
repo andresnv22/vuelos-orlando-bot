@@ -106,6 +106,22 @@ class PruebaAlertas(unittest.TestCase):
         avisos = self.revisar(int(historial * 0.94), self.umbral_total(1.21))
         self.assertEqual(len(avisos), 1)
 
+    def test_no_descarta_por_el_precio_real_de_otra_opcion(self):
+        self.precios.update(desde=0, real=None)
+        ideal = self._buscar(None, *b.FECHAS_IDEALES)[0][0]
+        barato = {**ideal, "aerolinea": "Avianca", "total": self.umbral_total(0.86)}
+        caro = {**ideal, "aerolinea": "LATAM", "hora": "9:00 AM", "total": self.umbral_total(1.01)}
+        b.buscar = lambda page, s, r: ([barato, caro], None, False) if (s, r) == b.FECHAS_IDEALES else ([], None, False)
+
+        def completar(page, v):  # el barato no muestra su precio real; el caro sí, y está sobre el tope
+            v["reserva"] = "https://reserva"
+            v["precio_real"] = None if v["aerolinea"] == "Avianca" else self.umbral_total(1.24)
+
+        b.completar_reserva = completar
+        avisos = self.revisar(0, 0)
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("sin confirmar", avisos[0])
+
     def test_guarda_el_historial(self):
         self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))
         self.assertEqual(len(json.loads(b.ESTADO.read_text())["revisiones"]), 1)
