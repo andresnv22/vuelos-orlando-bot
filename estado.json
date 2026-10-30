@@ -91,9 +91,14 @@
     {
       "fecha": "2026-10-29T21:11",
       "mejor": 8546812
+    },
+    {
+      "fecha": "2026-10-30T11:59",
+      "mejor": 8576152
     }
   ],
   "ultima_alerta": null,
   "ultimo_resumen": "2026-10-29",
-  "ultimo_aviso_error": null
+  "ultimo_aviso_error": null,
+  "ultimo_aviso_mail": null
 }
