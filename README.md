@@ -8,7 +8,7 @@ que ningún computador esté prendido.
 
 ## Qué hace
 
-- Cada 2 horas, de 6am a 10pm (hora de Colombia), busca en Google Flights:
+- Cada 3 horas (6am, 9am, 12m, 3pm, 6pm y 9pm, hora de Colombia) busca en Google Flights:
   - las **fechas ideales** (22 → 27 dic) y las cercanas (hasta 2 días antes o después, de 4 a 7 noches);
   - solo vuelos **directos**, sin Frontier, para **4 pasajeros**, con precios en **COP**.
 - Cuando el precio parece bueno, abre la página de reserva y lee el **precio real que da la aerolínea**
