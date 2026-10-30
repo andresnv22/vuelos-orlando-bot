@@ -29,9 +29,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Instalar Playwright y Chromium
+      - name: Instalar dependencias y Chromium
         run: |
-          pip install playwright==1.60.0
+          pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
       - name: Revisar precios

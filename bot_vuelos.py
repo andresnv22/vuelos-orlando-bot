@@ -36,15 +36,18 @@ AVISAR_POR = os.environ.get("AVISAR_POR", "recordatorios")
 EN_LA_NUBE = os.environ.get("GITHUB_ACTIONS") == "true"
 LISTA_RECORDATORIOS = "Vuelos Orlando"
 EMAIL_TO = "andresxnz@outlook.com"
-PASAJEROS = 4  # 3 adultos + joven de 17 (paga tarifa de adulto)
-FECHAS_IDEALES = (date(2026, 12, 22), date(2026, 12, 27))  # las fechas que de verdad quieren
-FLEXIBILIDAD_DIAS = 2  # fechas cercanas: hasta 2 días antes o después, en la ida y en la vuelta
-NOCHES_MIN, NOCHES_MAX = 4, 7
-EXCLUIR = ["frontier"]
-UMBRAL_POR_PERSONA = 2_100_000  # COP ida y vuelta por persona = "precio bueno"
-BAJADA_FUERTE = 0.05  # 5% por debajo del mínimo visto también cuenta como bueno
-MIN_REVISIONES_PARA_BAJADA = 4  # no comparar contra un historial muy corto
-REALERTA_SI_BAJA = 0.02  # tras avisar, solo vuelve a avisar si baja otro 2%
+
+# Fechas, pasajeros y umbral viven en config.json (se cambian ahí, sin tocar el código).
+CONFIG = json.loads((Path(__file__).resolve().parent / "config.json").read_text())
+PASAJEROS = CONFIG["pasajeros"]  # el joven de 17 paga tarifa de adulto
+FECHAS_IDEALES = tuple(date.fromisoformat(f) for f in CONFIG["fechas_ideales"])
+FLEXIBILIDAD_DIAS = CONFIG["flexibilidad_dias"]  # días antes o después, en la ida y en la vuelta
+NOCHES_MIN, NOCHES_MAX = CONFIG["noches_min"], CONFIG["noches_max"]
+EXCLUIR = [a.lower() for a in CONFIG["excluir_aerolineas"]]
+UMBRAL_POR_PERSONA = CONFIG["umbral_por_persona_cop"]  # COP ida y vuelta por persona = "precio bueno"
+BAJADA_FUERTE = CONFIG["bajada_fuerte"]  # caída contra el mínimo visto que también cuenta como buena
+MIN_REVISIONES_PARA_BAJADA = CONFIG["min_revisiones_para_bajada"]  # no comparar contra un historial corto
+REALERTA_SI_BAJA = CONFIG["realerta_si_baja"]  # tras avisar, solo vuelve a avisar si baja esto más
 # ------------------------------------------------
 
 # Primero tus fechas, después las cercanas.
@@ -91,8 +94,12 @@ def cop(n):
     return "$" + f"{n:,}".replace(",", ".")
 
 
+MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+
+
 def fecha_corta(iso):
-    return f"{date.fromisoformat(iso).day} dic"
+    d = date.fromisoformat(iso)
+    return f"{d.day} {MESES[d.month - 1]}"
 
 
 def buscar(page, salida, regreso):
@@ -375,7 +382,86 @@ def texto_recordatorio(vuelos, motivo=None):
     return "\n".join(lineas)
 
 
-def enviar_gmail(asunto, cuerpo):
+def grafica_png(estado):
+    """Gráfica del mejor precio por persona en cada revisión, con la línea de tu umbral. PNG o None."""
+    puntos = [(datetime.fromisoformat(r["fecha"]), r["mejor"] / PASAJEROS / 1e6)
+              for r in estado["revisiones"] if r.get("fecha", "").startswith("20")]
+    if len(puntos) < 2:
+        return None
+    try:
+        import io
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.dates as mdates
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+    fig, ax = plt.subplots(figsize=(7, 3), dpi=120)
+    ax.plot([p[0] for p in puntos], [p[1] for p in puntos], color="#1a73e8", linewidth=2, marker="o", markersize=3,
+            label='Mejor precio "desde" por persona')
+    ax.axhline(UMBRAL_POR_PERSONA / 1e6, color="#d93025", linestyle="--", linewidth=1.5, label="Tu umbral")
+    ax.set_ylabel("Millones COP por persona")
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
+    ax.grid(alpha=0.3)
+    ax.legend(loc="upper right", fontsize=8, frameon=False)
+    for borde in ("top", "right"):
+        ax.spines[borde].set_visible(False)
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def html_correo(intro, vuelos, con_grafica):
+    """Versión HTML del correo: tabla con las mejores opciones y botones para reservar."""
+    from html import escape
+    opciones = sorted(
+        opciones_para_reservar(sorted(vuelos, key=lambda v: v["total"])),
+        key=lambda v: v.get("precio_real") or v["total"],
+    )
+    filas = ""
+    for v in opciones:
+        precio = v.get("precio_real") or v["total"]
+        etiqueta = "precio real en la aerolínea" if v.get("precio_real") else "desde (sin confirmar)"
+        estrella = '<div style="color:#b06000;font-weight:bold;font-size:12px">⭐ TUS FECHAS</div>' if es_ideal(v) else ""
+        filas += f"""
+        <div style="border:1px solid #e0e0e0;border-radius:10px;padding:14px;margin:0 0 12px">
+          {estrella}<b style="font-size:15px">{escape(v['aerolinea'])}</b>
+          <div style="color:#555;font-size:13px;margin:2px 0 8px">{fecha_corta(v['salida'])} → {fecha_corta(v['regreso'])} · {v['noches']} noches · sale {escape(v['hora'])}</div>
+          <div style="font-size:20px;font-weight:bold">{cop(precio)} <span style="font-size:12px;font-weight:normal;color:#555">para los {PASAJEROS}</span></div>
+          <div style="color:#555;font-size:12px;margin-bottom:10px">{cop(precio // PASAJEROS)} por persona · {etiqueta}</div>
+          <a href="{escape(v.get('reserva') or v['url'])}" style="display:inline-block;background:#1a73e8;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:bold">Reservar en {escape(v['aerolinea'])}</a>
+        </div>"""
+    por_combo = {}
+    for v in sorted(vuelos, key=lambda v: v["total"]):
+        por_combo.setdefault((v["salida"], v["regreso"]), v)
+    combos = "".join(
+        f"<tr><td style='padding:4px 8px'>{'⭐ ' if es_ideal(v) else ''}{fecha_corta(s)} → {fecha_corta(r)} ({v['noches']} n)</td>"
+        f"<td style='padding:4px 8px;text-align:right'>{cop(v['total'])}</td>"
+        f"<td style='padding:4px 8px;color:#555'>{escape(v['aerolinea'])}</td></tr>"
+        for (s, r), v in sorted(por_combo.items())
+    )
+    grafica = ('<h3 style="margin:24px 0 8px">Cómo ha ido el precio</h3><img src="cid:grafica" width="100%" '
+               'style="max-width:600px" alt="Gráfica del precio">') if con_grafica else ""
+    return f"""<!doctype html>
+<html><body style="margin:0;background:#f4f6f8;font-family:Arial,Helvetica,sans-serif;color:#202124">
+<div style="max-width:640px;margin:0 auto;background:#fff;padding:20px 16px">
+  <h2 style="margin:0 0 4px">✈️ Bogotá → Orlando · vuelos directos</h2>
+  <div style="color:#555;font-size:13px">{PASAJEROS} pasajeros · ida y vuelta · revisado {datetime.now():%d/%m/%Y %H:%M}</div>
+  <p style="font-size:15px;line-height:1.5">{escape(intro).replace(chr(10), '<br>')}</p>
+  {filas}
+  <p style="font-size:12px;color:#555">El botón abre Google Flights con el vuelo ya elegido; ahí dale a
+     "Reservar con Avianca/LATAM" para comprar en la web oficial de la aerolínea.</p>
+  {grafica}
+  <h3 style="margin:24px 0 8px">Mejor precio "desde" por fechas</h3>
+  <table style="border-collapse:collapse;font-size:13px">{combos}</table>
+  <p style="font-size:12px;color:#777;margin-top:24px">Tu umbral: {cop(UMBRAL_POR_PERSONA)} por persona.
+     Precios totales con impuestos; maletas facturadas aparte. Compra solo en la web oficial de la aerolínea.</p>
+</div></body></html>"""
+
+
+def enviar_gmail(asunto, cuerpo, html=None, png=None):
     """Envía desde tu Gmail a ti mismo con una contraseña de aplicación (secretos de GitHub)."""
     usuario = os.environ.get("GMAIL_USER", "").strip()
     clave = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()  # Google la muestra con espacios
@@ -387,7 +473,11 @@ def enviar_gmail(asunto, cuerpo):
         return False
     msg = EmailMessage()
     msg["Subject"], msg["From"], msg["To"] = asunto, usuario, os.environ.get("EMAIL_TO") or usuario
-    msg.set_content(cuerpo)
+    msg.set_content(cuerpo)  # versión de texto, por si el lector de correo no muestra HTML
+    if html:
+        msg.add_alternative(html, subtype="html")
+        if png:
+            msg.get_payload()[1].add_related(png, "image", "png", cid="<grafica>")
     for puerto in (465, 587):  # si un puerto falla, se prueba el otro
         paso = "conectar"
         try:
@@ -407,11 +497,12 @@ def enviar_gmail(asunto, cuerpo):
     return False
 
 
-def avisar(asunto, cuerpo_correo, texto_corto):
+def avisar(asunto, cuerpo_correo, texto_corto, html=None, png=None):
     if AVISAR_POR == "recordatorios":
         return crear_recordatorio(asunto, texto_corto)
     if AVISAR_POR == "gmail":
-        return enviar_gmail(asunto, f"{texto_corto}\n\n{'-' * 60}\nDETALLE COMPLETO\n\n{cuerpo_correo}")
+        texto = f"{texto_corto}\n\n{'-' * 60}\nDETALLE COMPLETO\n\n{cuerpo_correo}"
+        return enviar_gmail(asunto, texto, html, png)
     return enviar_correo(asunto, cuerpo_correo)
 
 
@@ -444,9 +535,13 @@ def probar_aviso():
         browser.close()
     if not vuelos:
         return avisar("🧪 Prueba bot de vuelos", "", "Google no devolvió vuelos ahora, pero los avisos funcionan.")
-    texto = "Esto es una PRUEBA del bot (solo 2 fechas revisadas).\n\n" + texto_recordatorio(vuelos)
+    intro = "Esto es una PRUEBA del bot (solo 2 fechas revisadas)."
+    texto = f"{intro}\n\n" + texto_recordatorio(vuelos)
     print(texto)
-    return avisar(f"🧪 Prueba bot vuelos BOG→MCO: desde {cop(vuelos[0]['total'])}", texto, texto)
+    estado = json.loads(ESTADO.read_text()) if ESTADO.exists() else {"revisiones": []}
+    png = grafica_png(estado)
+    return avisar(f"🧪 Prueba bot vuelos BOG→MCO: desde {cop(vuelos[0]['total'])}", texto, texto,
+                  html_correo(intro, vuelos, png is not None), png)
 
 
 def main():
@@ -526,7 +621,7 @@ def main():
         # Un solo aviso de error por día; no se intenta saltar el captcha.
         if estado["ultimo_aviso_error"] != hoy:
             texto = f"{motivo}. El bot lo vuelve a intentar en la próxima revisión."
-            avisos.append(("⚠️ Bot vuelos BOG→MCO: no se pudo revisar", texto, texto, {"ultimo_aviso_error": hoy}))
+            avisos.append(("⚠️ Bot vuelos BOG→MCO: no se pudo revisar", texto, texto, {"ultimo_aviso_error": hoy}, None))
     else:
         mejor, cuerpo = detalle(vuelos, estado)
         if alerta:
@@ -539,6 +634,7 @@ def main():
                 f"Por qué te aviso: {motivo}.\n\n{cuerpo}",
                 texto_recordatorio(vuelos, motivo),
                 {"ultima_alerta": precio_alerta},
+                f"🔥 Por qué te aviso: {motivo}.",
             ))
         if resumen:
             intro = (
@@ -551,16 +647,19 @@ def main():
                 intro + cuerpo,
                 intro + texto_recordatorio(vuelos),
                 {"ultimo_resumen": hoy},
+                intro.strip(),
             ))
         estado["revisiones"].append({"fecha": ahora.isoformat(timespec="minutes"), "mejor": mejor["total"]})
         print(f"Mejor: {cop(mejor['total'])} · {mejor['aerolinea']} · ¿bueno? {motivo or 'no'}")
 
     fallo_aviso = False
-    for asunto, texto, corto, cambios in avisos:
+    png = grafica_png(estado) if avisos and AVISAR_POR == "gmail" else None
+    for asunto, texto, corto, cambios, intro_html in avisos:
         print(f"\n{asunto}\n\n{corto if AVISAR_POR == 'recordatorios' else texto}")
         if dry_run:
             continue
-        if avisar(asunto, texto, corto):
+        html = html_correo(intro_html, vuelos, png is not None) if intro_html and vuelos else None
+        if avisar(asunto, texto, corto, html, png if html else None):
             estado.update(cambios)
             print(f"\nAviso enviado por {AVISAR_POR}")
             continue

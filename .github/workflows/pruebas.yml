@@ -1,0 +1,25 @@
+name: Pruebas
+
+on:
+  push:
+    paths-ignore:
+      - estado.json  # el historial de precios cambia en cada revisión y no necesita pruebas
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Correr pruebas
+        run: python -m unittest discover -s tests -v

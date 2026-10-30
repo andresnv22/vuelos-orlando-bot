@@ -1,0 +1,17 @@
+{
+  "pasajeros": 4,
+  "fechas_ideales": [
+    "2026-12-22",
+    "2026-12-27"
+  ],
+  "flexibilidad_dias": 2,
+  "noches_min": 4,
+  "noches_max": 7,
+  "excluir_aerolineas": [
+    "frontier"
+  ],
+  "umbral_por_persona_cop": 2100000,
+  "bajada_fuerte": 0.05,
+  "min_revisiones_para_bajada": 4,
+  "realerta_si_baja": 0.02
+}

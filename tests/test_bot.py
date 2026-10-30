@@ -1,0 +1,140 @@
+"""Pruebas del bot con precios simulados: no abren Google ni mandan correos.
+
+Correr con:  python -m unittest discover -s tests -v
+"""
+import contextlib
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import bot_vuelos as b  # noqa: E402
+
+
+class _Falso:
+    """Hace de navegador y de página: el bot solo les llama close() y wait_for_timeout()."""
+
+    def close(self):
+        pass
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+@contextlib.contextmanager
+def _sin_playwright():
+    yield None
+
+
+class PruebaAlertas(unittest.TestCase):
+    def setUp(self):
+        self.precios = {}
+        self.enviados = []
+        self.originales = {n: getattr(b, n) for n in
+                           ("sync_playwright", "abrir_navegador", "buscar", "completar_reserva", "avisar", "ESTADO")}
+        b.sync_playwright = _sin_playwright
+        b.abrir_navegador = lambda p: (_Falso(), _Falso())
+        b.buscar = self._buscar
+        b.completar_reserva = self._completar
+        b.avisar = lambda asunto, *resto: self.enviados.append(asunto) or True
+        self.tmp = tempfile.TemporaryDirectory()
+        b.ESTADO = Path(self.tmp.name) / "estado.json"
+        self.guardar_estado([])
+        self.argv = sys.argv
+        sys.argv = ["bot"]
+
+    def tearDown(self):
+        for nombre, valor in self.originales.items():
+            setattr(b, nombre, valor)
+        sys.argv = self.argv
+        self.tmp.cleanup()
+
+    def guardar_estado(self, revisiones):
+        # ultimo_resumen en el futuro para que el resumen semanal no se mezcle con las pruebas
+        b.ESTADO.write_text(json.dumps({"revisiones": revisiones, "ultimo_resumen": "2099-01-01"}))
+
+    def _buscar(self, page, salida, regreso):
+        if (salida, regreso) != b.FECHAS_IDEALES:
+            return [], None, False
+        return [{
+            "salida": salida.isoformat(), "regreso": regreso.isoformat(), "noches": (regreso - salida).days,
+            "aerolinea": "Avianca", "hora": "4:20 PM", "total": self.precios["desde"],
+            "basica": False, "insight": None, "url": "https://ejemplo",
+        }], None, False
+
+    def _completar(self, page, v):
+        v["reserva"] = "https://reserva"
+        v["precio_real"] = self.precios["real"]
+
+    def revisar(self, desde, real):
+        """Corre una revisión completa y devuelve los asuntos de los avisos que mandó."""
+        self.precios.update(desde=desde, real=real)
+        antes = len(self.enviados)
+        b.main()
+        return self.enviados[antes:]
+
+    def umbral_total(self, factor):
+        return int(b.UMBRAL_POR_PERSONA * b.PASAJEROS * factor)
+
+    def test_avisa_si_el_precio_real_baja_del_umbral(self):
+        avisos = self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("¡Precio bueno!", avisos[0])
+
+    def test_no_repite_la_misma_alerta(self):
+        self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
+        self.assertEqual(self.revisar(self.umbral_total(0.94), self.umbral_total(0.98)), [])
+        self.assertEqual(self.revisar(self.umbral_total(0.93), self.umbral_total(0.97)), [])  # bajó solo 1%
+
+    def test_vuelve_a_avisar_si_baja_otro_poco(self):
+        self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
+        self.assertEqual(len(self.revisar(self.umbral_total(0.92), self.umbral_total(0.95))), 1)  # bajó 3%
+
+    def test_no_avisa_si_solo_el_desde_es_bueno(self):
+        self.assertEqual(self.revisar(self.umbral_total(0.95), self.umbral_total(1.07)), [])
+
+    def test_sin_precio_real_avisa_sin_confirmar(self):
+        avisos = self.revisar(self.umbral_total(0.85), None)
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("sin confirmar", avisos[0])
+
+    def test_bajada_fuerte_del_desde_avisa(self):
+        historial = self.umbral_total(1.20)
+        self.guardar_estado([{"fecha": "2026-11-01T06:00", "mejor": historial}] * b.MIN_REVISIONES_PARA_BAJADA)
+        avisos = self.revisar(int(historial * 0.94), self.umbral_total(1.21))
+        self.assertEqual(len(avisos), 1)
+
+    def test_guarda_el_historial(self):
+        self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))
+        self.assertEqual(len(json.loads(b.ESTADO.read_text())["revisiones"]), 1)
+
+
+class PruebaCorreoYConfig(unittest.TestCase):
+    def vuelo(self, salida, regreso, total, real=None):
+        return {"salida": salida, "regreso": regreso, "noches": 5, "aerolinea": "LATAM", "hora": "9:00 AM",
+                "total": total, "precio_real": real, "reserva": "https://reserva", "url": "https://x"}
+
+    def test_las_fechas_ideales_van_primero(self):
+        self.assertEqual(b.COMBINACIONES[0], b.FECHAS_IDEALES)
+        for salida, regreso in b.COMBINACIONES:
+            self.assertTrue(b.NOCHES_MIN <= (regreso - salida).days <= b.NOCHES_MAX)
+
+    def test_correo_html_tiene_botones_y_marca_tus_fechas(self):
+        ideal = [d.isoformat() for d in b.FECHAS_IDEALES]
+        html = b.html_correo("intro", [self.vuelo(*ideal, 9_000_000, 9_500_000)], False)
+        self.assertIn("Reservar en LATAM", html)
+        self.assertIn("TUS FECHAS", html)
+        self.assertIn(b.cop(9_500_000), html)
+
+    def test_grafica_es_un_png(self):
+        estado = {"revisiones": [{"fecha": f"2026-11-0{d}T06:00", "mejor": 9_000_000 + d} for d in range(1, 4)]}
+        png = b.grafica_png(estado)
+        if png is None:
+            self.skipTest("matplotlib no está instalado")
+        self.assertTrue(png.startswith(b"\x89PNG"))
+
+
+if __name__ == "__main__":
+    unittest.main()
