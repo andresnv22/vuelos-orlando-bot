@@ -76,9 +76,9 @@ class PruebaAlertas(unittest.TestCase):
         return self.enviados[antes:]
 
     def umbral_total(self, factor):
-        return int(b.UMBRAL_POR_PERSONA * b.PASAJEROS * factor)
+        return int(b.UMBRAL_TOTAL * factor)
 
-    def test_avisa_si_el_precio_real_baja_del_umbral(self):
+    def test_avisa_si_el_precio_real_queda_bajo_el_tope(self):
         avisos = self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
         self.assertEqual(len(avisos), 1)
         self.assertIn("¡Precio bueno!", avisos[0])
@@ -134,6 +134,16 @@ class PruebaCorreoYConfig(unittest.TestCase):
         if png is None:
             self.skipTest("matplotlib no está instalado")
         self.assertTrue(png.startswith(b"\x89PNG"))
+
+
+
+class PruebaTope(unittest.TestCase):
+    def test_justo_en_el_tope_no_avisa_y_un_peso_menos_si(self):
+        self.assertIsNone(b.motivo_umbral(b.UMBRAL_TOTAL))
+        self.assertIsNotNone(b.motivo_umbral(b.UMBRAL_TOTAL - 1))
+
+    def test_tope_es_10_millones(self):
+        self.assertEqual(b.UMBRAL_TOTAL, 10_000_000)
 
 
 if __name__ == "__main__":

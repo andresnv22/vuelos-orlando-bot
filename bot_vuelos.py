@@ -3,7 +3,7 @@
 Revisa en Google Flights varias combinaciones de fechas (mínimo 4 noches),
 solo vuelos directos, sin Frontier, precios en COP para 4 adultos.
 Solo manda correo cuando el precio es realmente bueno:
-  - el precio por persona baja del UMBRAL_POR_PERSONA, o
+  - el precio total ida y vuelta para todos queda por debajo de UMBRAL_TOTAL, o
   - aparece un mínimo nuevo al menos BAJADA_FUERTE más barato que el mínimo visto.
 Además manda un resumen semanal (lunes) para que sepas que sigue vivo.
 
@@ -44,7 +44,7 @@ FECHAS_IDEALES = tuple(date.fromisoformat(f) for f in CONFIG["fechas_ideales"])
 FLEXIBILIDAD_DIAS = CONFIG["flexibilidad_dias"]  # días antes o después, en la ida y en la vuelta
 NOCHES_MIN, NOCHES_MAX = CONFIG["noches_min"], CONFIG["noches_max"]
 EXCLUIR = [a.lower() for a in CONFIG["excluir_aerolineas"]]
-UMBRAL_POR_PERSONA = CONFIG["umbral_por_persona_cop"]  # COP ida y vuelta por persona = "precio bueno"
+UMBRAL_TOTAL = CONFIG["umbral_total_cop"]  # COP ida y vuelta para todos: avisa si el precio queda por debajo
 BAJADA_FUERTE = CONFIG["bajada_fuerte"]  # caída contra el mínimo visto que también cuenta como buena
 MIN_REVISIONES_PARA_BAJADA = CONFIG["min_revisiones_para_bajada"]  # no comparar contra un historial corto
 REALERTA_SI_BAJA = CONFIG["realerta_si_baja"]  # tras avisar, solo vuelve a avisar si baja esto más
@@ -226,9 +226,8 @@ def link_reserva_google(page, v):
 
 def motivo_umbral(total):
     """Motivo si el precio total (para los 4) queda debajo del umbral por persona, o None."""
-    por_persona = total // PASAJEROS
-    if por_persona <= UMBRAL_POR_PERSONA:
-        return f"{cop(por_persona)} por persona, debajo de tu umbral de {cop(UMBRAL_POR_PERSONA)}"
+    if total < UMBRAL_TOTAL:
+        return f"{cop(total)} ida y vuelta para los {PASAJEROS}, menos de tu tope de {cop(UMBRAL_TOTAL)}"
     return None
 
 
@@ -375,7 +374,7 @@ def texto_recordatorio(vuelos, motivo=None):
             "",
         ]
     lineas += [
-        f"Tu umbral: {cop(UMBRAL_POR_PERSONA)} por persona.",
+        f"Tu tope: menos de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS}.",
         "Abre el link y dale a \"Reservar con Avianca/LATAM\" para comprar en la web oficial.",
         "Precios con impuestos; maletas facturadas aparte.",
     ]
@@ -383,8 +382,8 @@ def texto_recordatorio(vuelos, motivo=None):
 
 
 def grafica_png(estado):
-    """Gráfica del mejor precio por persona en cada revisión, con la línea de tu umbral. PNG o None."""
-    puntos = [(datetime.fromisoformat(r["fecha"]), r["mejor"] / PASAJEROS / 1e6)
+    """Gráfica del mejor precio total en cada revisión, con la línea de tu tope. PNG o None."""
+    puntos = [(datetime.fromisoformat(r["fecha"]), r["mejor"] / 1e6)
               for r in estado["revisiones"] if r.get("fecha", "").startswith("20")]
     if len(puntos) < 2:
         return None
@@ -398,9 +397,9 @@ def grafica_png(estado):
         return None
     fig, ax = plt.subplots(figsize=(7, 3), dpi=120)
     ax.plot([p[0] for p in puntos], [p[1] for p in puntos], color="#1a73e8", linewidth=2, marker="o", markersize=3,
-            label='Mejor precio "desde" por persona')
-    ax.axhline(UMBRAL_POR_PERSONA / 1e6, color="#d93025", linestyle="--", linewidth=1.5, label="Tu umbral")
-    ax.set_ylabel("Millones COP por persona")
+            label=f'Mejor precio "desde" para los {PASAJEROS}')
+    ax.axhline(UMBRAL_TOTAL / 1e6, color="#d93025", linestyle="--", linewidth=1.5, label="Tu tope")
+    ax.set_ylabel("Millones COP ida y vuelta")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
     ax.grid(alpha=0.3)
     ax.legend(loc="upper right", fontsize=8, frameon=False)
@@ -456,7 +455,7 @@ def html_correo(intro, vuelos, con_grafica):
   {grafica}
   <h3 style="margin:24px 0 8px">Mejor precio "desde" por fechas</h3>
   <table style="border-collapse:collapse;font-size:13px">{combos}</table>
-  <p style="font-size:12px;color:#777;margin-top:24px">Tu umbral: {cop(UMBRAL_POR_PERSONA)} por persona.
+  <p style="font-size:12px;color:#777;margin-top:24px">Tu tope: menos de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS}.
      Precios totales con impuestos; maletas facturadas aparte. Compra solo en la web oficial de la aerolínea.</p>
 </div></body></html>"""
 
@@ -639,7 +638,7 @@ def main():
         if resumen:
             intro = (
                 "Resumen semanal: todavía no hay un precio que valga la pena, sigo vigilando.\n"
-                f"Te aviso apenas baje de {cop(UMBRAL_POR_PERSONA)} por persona "
+                f"Te aviso apenas baje de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS} "
                 f"o caiga {round(BAJADA_FUERTE * 100)}% bajo el mínimo visto.\n\n"
             )
             avisos.append((

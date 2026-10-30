@@ -20,7 +20,7 @@ que ningún computador esté prendido.
 
 | Correo | Cuándo |
 |---|---|
-| 🔥 **¡Precio bueno!** | El precio real en la aerolínea baja del umbral por persona, o el precio "desde" cae 5% bajo el mínimo visto. No se repite salvo que baje otro 2%. |
+| 🔥 **¡Precio bueno!** | El precio real en la aerolínea, ida y vuelta para los 4, queda por debajo del tope (menos de $10.000.000), o el precio "desde" cae 5% bajo el mínimo visto. No se repite salvo que baje otro 2%. |
 | 🔥 **Posible precio bueno (sin confirmar)** | Igual que el anterior, pero no se pudo leer el precio en la aerolínea. |
 | ✈️ **Resumen semanal** | Los lunes, para saber que el bot sigue vivo. |
 | ⚠️ **No se pudo revisar** | Google no devolvió resultados (máximo uno al día). |
@@ -38,7 +38,7 @@ Todo está en [`config.json`](config.json); no hace falta tocar el código:
 | `flexibilidad_dias` | Cuántos días antes o después se aceptan, en la ida y en la vuelta. |
 | `noches_min`, `noches_max` | Duración aceptable del viaje. |
 | `excluir_aerolineas` | Aerolíneas que no interesan. |
-| `umbral_por_persona_cop` | Precio ida y vuelta por persona a partir del cual se avisa. |
+| `umbral_total_cop` | Tope del precio ida y vuelta **para todos**: se avisa si queda por debajo (hoy 10.000.000). |
 | `bajada_fuerte` | Caída contra el mínimo visto que también dispara aviso (0.05 = 5%). |
 | `realerta_si_baja` | Cuánto más tiene que bajar para volver a avisar (0.02 = 2%). |
 
