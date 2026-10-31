@@ -192,7 +192,8 @@ def verificar_precios(page, vuelos):
     candidatos = sorted(por_fecha.values(), key=lambda v: (not es_ideal(v), v["total"]))
     for v in [v for v in candidatos if motivo_umbral(v["total"])][:MAX_VERIFICAR]:
         completar_reserva(page, v)
-        real = cop(v["precio_real"]) if v.get("precio_real") else "no se pudo leer"
+        real = (cop(v["precio_real"]) if v.get("precio_real")
+                else "solo tiquetes separados (no cuenta)" if v.get("solo_separados") else "no se pudo leer")
         print(f"  {v['aerolinea']} {v['salida']} → {v['regreso']}: desde {cop(v['total'])}, real {real}")
         if v.get("precio_real") and motivo_umbral(v["precio_real"]):
             return
@@ -203,15 +204,33 @@ def completar_reserva(page, v):
     <aerolínea>" que lleva a su web oficial) y el precio real que da la aerolínea ahí."""
     v["reserva"] = link_reserva_google(page, v)
     v["precio_real"] = None
+    v["solo_separados"] = False
     if not v["reserva"]:
         return
-    patron = re.compile(rf"Book with {re.escape(v['aerolinea'])}\s*Airline\s*COP\s*([\d,]+)")
     for _ in range(12):  # los precios de la aerolínea tardan unos segundos en cargar
-        m = patron.search(page.inner_text("body"))
-        if m:
-            v["precio_real"] = int(m.group(1).replace(",", ""))
+        precio, separados = precio_ida_vuelta(page.inner_text("body"), v["aerolinea"])
+        if precio:
+            v["precio_real"] = precio
             return
         page.wait_for_timeout(2500)
+    v["solo_separados"] = separados
+
+
+def precio_ida_vuelta(texto, aerolinea):
+    """Del texto de la página de reserva de Google, el precio de la reserva de ida y vuelta JUNTA
+    con la aerolínea ("Book with Avianca · COP ..."). Las opciones de "Separate tickets" (dos
+    tiquetes por aparte) no cuentan. Devuelve (precio o None, si solo había tiquetes separados)."""
+    separados = False
+    for opcion in texto.split("Book with ")[1:]:
+        bloque = opcion[:300]
+        if "Separate tickets" in bloque:
+            separados = True
+            continue
+        if re.match(rf"{re.escape(aerolinea)}\s*Airline", bloque):
+            m = re.search(r"COP\s*([\d,]+)", bloque)
+            if m:
+                return int(m.group(1).replace(",", "")), False
+    return None, separados
 
 
 def link_reserva_google(page, v):
@@ -296,11 +315,12 @@ def detalle(vuelos, estado):
         )
         if v.get("precio_real"):
             lineas.append(
-                f"   Precio real en {v['aerolinea']}: {cop(v['precio_real'])} "
+                f"   Precio real ida y vuelta en una sola reserva con {v['aerolinea']}: {cop(v['precio_real'])} "
                 f"({cop(v['precio_real'] // PASAJEROS)} por persona)"
             )
         if v.get("reserva"):
-            lineas.append(f"   Vuelo exacto ya elegido → botón \"Reservar con {v['aerolinea']}\": {v['reserva']}")
+            lineas.append(f"   Ida y vuelta ya elegidas → botón \"Reservar con {v['aerolinea']}\" "
+                          f"(no \"Billetes separados\"): {v['reserva']}")
         else:
             lineas.append(f"   Ver en Google Flights: {v['url']}")
         if "latam" in v["aerolinea"].lower():
@@ -387,13 +407,16 @@ def texto_recordatorio(vuelos, motivo=None):
             f"{i}. {'⭐ TUS FECHAS · ' if es_ideal(v) else ''}{v['aerolinea']} · "
             f"{fecha_corta(v['salida'])} → {fecha_corta(v['regreso'])} "
             f"({v['noches']} noches) · sale {v['hora']}",
-            f"   {cop(precio)} para los 4 ({etiqueta}) · {cop(precio // PASAJEROS)} c/u",
+            f"   {cop(precio)} ida y vuelta para los {PASAJEROS} ({etiqueta}) · {cop(precio // PASAJEROS)} c/u",
+            *([f"   Ida y vuelta en una sola reserva con {v['aerolinea']} (no son tiquetes separados)"]
+              if v.get("precio_real") else []),
             f"   Reservar: {v.get('reserva') or v['url']}",
             "",
         ]
     lineas += [
         f"Tu tope: menos de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS}.",
-        "Abre el link y dale a \"Reservar con Avianca/LATAM\" para comprar en la web oficial.",
+        "Abre el link y elige \"Reservar con Avianca/LATAM\" (no \"Billetes separados\") para comprar",
+        "la ida y la vuelta juntas en la web oficial.",
         "Precios con impuestos; maletas facturadas aparte.",
     ]
     return "\n".join(lineas)
@@ -440,13 +463,14 @@ def html_correo(intro, vuelos, con_grafica):
     filas = ""
     for v in opciones:
         precio = v.get("precio_real") or v["total"]
-        etiqueta = "precio real en la aerolínea" if v.get("precio_real") else "desde (sin confirmar)"
+        etiqueta = ("ida y vuelta en una sola reserva con " + escape(v["aerolinea"]) if v.get("precio_real")
+                    else "desde (sin confirmar en la aerolínea)")
         estrella = '<div style="color:#b06000;font-weight:bold;font-size:12px">⭐ TUS FECHAS</div>' if es_ideal(v) else ""
         filas += f"""
         <div style="border:1px solid #e0e0e0;border-radius:10px;padding:14px;margin:0 0 12px">
           {estrella}<b style="font-size:15px">{escape(v['aerolinea'])}</b>
           <div style="color:#555;font-size:13px;margin:2px 0 8px">{fecha_corta(v['salida'])} → {fecha_corta(v['regreso'])} · {v['noches']} noches · sale {escape(v['hora'])}</div>
-          <div style="font-size:20px;font-weight:bold">{cop(precio)} <span style="font-size:12px;font-weight:normal;color:#555">para los {PASAJEROS}</span></div>
+          <div style="font-size:20px;font-weight:bold">{cop(precio)} <span style="font-size:12px;font-weight:normal;color:#555">ida y vuelta para los {PASAJEROS}</span></div>
           <div style="color:#555;font-size:12px;margin-bottom:10px">{cop(precio // PASAJEROS)} por persona · {etiqueta}</div>
           <a href="{escape(v.get('reserva') or v['url'])}" style="display:inline-block;background:#1a73e8;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:bold">Reservar en {escape(v['aerolinea'])}</a>
         </div>"""
@@ -468,8 +492,9 @@ def html_correo(intro, vuelos, con_grafica):
   <div style="color:#555;font-size:13px">{PASAJEROS} pasajeros · ida y vuelta · revisado {datetime.now():%d/%m/%Y %H:%M}</div>
   <p style="font-size:15px;line-height:1.5">{escape(intro).replace(chr(10), '<br>')}</p>
   {filas}
-  <p style="font-size:12px;color:#555">El botón abre Google Flights con el vuelo ya elegido; ahí dale a
-     "Reservar con Avianca/LATAM" para comprar en la web oficial de la aerolínea.</p>
+  <p style="font-size:12px;color:#555">El botón abre Google Flights con la ida y la vuelta ya elegidas. Ahí
+     dale a <b>"Reservar con Avianca/LATAM"</b> (no a "Billetes separados") para comprar las dos juntas en la
+     web oficial de la aerolínea.</p>
   {grafica}
   <h3 style="margin:24px 0 8px">Mejor precio "desde" por fechas</h3>
   <table style="border-collapse:collapse;font-size:13px">{combos}</table>
@@ -624,7 +649,8 @@ def main():
                 revisados = [v for v in vuelos if "reserva" in v]
                 reales = [v["precio_real"] for v in revisados if v.get("precio_real")]
                 bajo_tope = [r for r in reales if motivo_umbral(r)]
-                sin_leer = [v["total"] for v in revisados if not v.get("precio_real") and motivo_umbral(v["total"])]
+                sin_leer = [v["total"] for v in revisados
+                            if not v.get("precio_real") and not v.get("solo_separados") and motivo_umbral(v["total"])]
                 if bajo_tope:
                     confirmado, precio_alerta = True, min(bajo_tope)
                 elif sin_leer:

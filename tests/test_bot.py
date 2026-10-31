@@ -179,6 +179,27 @@ class PruebaCorreoYConfig(unittest.TestCase):
 
 
 
+class PruebaPaginaDeReserva(unittest.TestCase):
+    # Textos como los que muestra Google Flights en la página de reserva (en inglés).
+    JUNTA = "Booking options\nBook with AviancaAirline\nCOP\xa09,556,240\nContinue\nView options\n"
+    SEPARADOS = ("Book with LATAM, DeltaAirline\nSeparate tickets\nThe 2 tickets in this itinerary must be "
+                 "booked separately\nCOP\xa014,748,866\nContinue\n")
+    SEPARADOS_MISMA = "Book with LATAMAirline\nSeparate tickets\nCOP\xa08,100,000\nContinue\n"
+
+    def test_lee_la_reserva_de_ida_y_vuelta_junta(self):
+        self.assertEqual(b.precio_ida_vuelta(self.JUNTA, "Avianca"), (9_556_240, False))
+
+    def test_ignora_tiquetes_separados_aunque_sean_mas_baratos(self):
+        texto = "Booking options\n" + self.SEPARADOS_MISMA + "Book with LATAMAirline\nCOP\xa011,288,920\nContinue\n"
+        self.assertEqual(b.precio_ida_vuelta(texto, "LATAM"), (11_288_920, False))
+
+    def test_si_solo_hay_separados_no_da_precio(self):
+        self.assertEqual(b.precio_ida_vuelta("Booking options\n" + self.SEPARADOS_MISMA, "LATAM"), (None, True))
+
+    def test_no_confunde_otra_aerolinea(self):
+        self.assertEqual(b.precio_ida_vuelta(self.JUNTA, "LATAM"), (None, False))
+
+
 class PruebaTope(unittest.TestCase):
     def test_justo_en_el_tope_no_avisa_y_un_peso_menos_si(self):
         self.assertIsNone(b.motivo_umbral(b.UMBRAL_TOTAL))
