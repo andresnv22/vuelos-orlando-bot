@@ -8,11 +8,13 @@ que ningún computador esté prendido.
 
 ## Qué hace
 
-- Cada 3 horas (6am, 9am, 12m, 3pm, 6pm y 9pm, hora de Colombia) busca en Google Flights:
+- Cada 3 horas, de 6am a 9pm hora de Colombia, busca en Google Flights. GitHub a veces se salta horarios,
+  así que el workflow se despierta cada hora y solo revisa si ya pasaron más de 2h20 desde la última vez:
   - las **fechas ideales** (22 → 27 dic) y las cercanas (hasta 2 días antes o después, de 4 a 7 noches);
   - solo vuelos **directos**, sin Frontier, para **4 pasajeros**, con precios en **COP**.
 - Cuando el precio parece bueno, abre la página de reserva y lee el **precio real que da la aerolínea**
-  (suele ser más alto que el "desde" de la búsqueda).
+  (puede ser mucho más alto que el "desde" de la búsqueda). Revisa hasta 8 fechas, empezando por las ideales,
+  hasta encontrar una que de verdad esté bajo el tope.
 - Manda un correo con diseño, botones para **reservar en la web oficial** de Avianca o LATAM y una
   **gráfica** de cómo ha ido el precio.
 

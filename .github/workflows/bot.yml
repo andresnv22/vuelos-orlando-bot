@@ -2,9 +2,11 @@ name: Bot vuelos BOG-MCO
 
 on:
   schedule:
-    # Cada 3 horas: 6am, 9am, 12m, 3pm, 6pm y 9pm hora de Colombia (GitHub usa hora UTC = Colombia + 5).
-    # Minuto 23 y no en punto: a las horas en punto GitHub está saturado y retrasa o se salta corridas.
-    - cron: "23 2,11,14,17,20,23 * * *"
+    # GitHub no garantiza los horarios: a veces retrasa o se salta corridas. Por eso se despierta cada
+    # hora (6:23am a 9:23pm hora de Colombia = UTC - 5) y el paso "¿Toca revisar?" solo deja seguir si
+    # ya pasaron más de 2h20 desde la última revisión (así sale una cada 3 horas). Si GitHub se salta una, la siguiente la recupera.
+    # Minuto 23 y no en punto: a las horas en punto GitHub está más saturado.
+    - cron: "23 0-2,11-23 * * *"
   workflow_dispatch:
     inputs:
       modo:
@@ -25,16 +27,41 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: ¿Toca revisar?
+        id: toca
+        env:
+          TZ: America/Bogota
+          EVENTO: ${{ github.event_name }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from datetime import datetime, timedelta
+          ahora = datetime.now()
+          revisiones = json.load(open("estado.json")).get("revisiones", [])
+          ultima = datetime.fromisoformat(revisiones[-1]["fecha"]) if revisiones else None
+          if os.environ["EVENTO"] != "schedule":
+              si = True  # corrida lanzada a mano
+          else:
+              si = 6 <= ahora.hour <= 21 and (ultima is None or ahora - ultima >= timedelta(hours=2, minutes=20))
+          print(f"Ahora {ahora:%d/%m %H:%M}, última revisión {ultima:%d/%m %H:%M}" if ultima else "Sin revisiones")
+          print("Toca revisar" if si else "Todavía no toca; se espera a la próxima")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"si={'true' if si else 'false'}\n")
+          PY
+
       - uses: actions/setup-python@v6
+        if: steps.toca.outputs.si == 'true'
         with:
           python-version: "3.12"
 
       - name: Instalar dependencias y Chromium
+        if: steps.toca.outputs.si == 'true'
         run: |
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
       - name: Revisar precios
+        if: steps.toca.outputs.si == 'true'
         env:
           AVISAR_POR: gmail
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
@@ -50,7 +77,7 @@ jobs:
           esac
 
       - name: Guardar historial de precios
-        if: always()
+        if: always() && steps.toca.outputs.si == 'true'
         run: |
           git config user.name "bot-vuelos"
           git config user.email "bot-vuelos@users.noreply.github.com"

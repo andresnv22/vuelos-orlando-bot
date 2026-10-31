@@ -48,6 +48,7 @@ UMBRAL_TOTAL = CONFIG["umbral_total_cop"]  # COP ida y vuelta para todos: avisa 
 BAJADA_FUERTE = CONFIG["bajada_fuerte"]  # caída contra el mínimo visto que también cuenta como buena
 MIN_REVISIONES_PARA_BAJADA = CONFIG["min_revisiones_para_bajada"]  # no comparar contra un historial corto
 REALERTA_SI_BAJA = CONFIG["realerta_si_baja"]  # tras avisar, solo vuelve a avisar si baja esto más
+MAX_VERIFICAR = 8  # cuántas fechas como máximo se revisan en la página de la aerolínea por corrida
 # ------------------------------------------------
 
 # Primero tus fechas, después las cercanas.
@@ -167,17 +168,34 @@ def es_ideal(v):
 
 
 def opciones_para_reservar(vuelos):
-    """La mejor de tus fechas, las más baratas y, si hace falta, otra aerolínea (máx. 3)."""
-    elegidos = [v for v in vuelos if es_ideal(v)][:1]
-    libres = 3 if elegidos else 2  # con tus fechas fijas, las otras 2 son las más baratas
-    for v in vuelos:
-        if v in elegidos:
-            continue
-        if len(elegidos) < libres or v["aerolinea"] not in {e["aerolinea"] for e in elegidos}:
-            elegidos.append(v)
+    """Lo que se muestra en el aviso (máx. 3): primero lo confirmado bajo el tope en la aerolínea,
+    después tus fechas y luego lo más barato. `vuelos` viene ordenado por precio "desde"."""
+    elegidos = sorted(
+        (v for v in vuelos if v.get("precio_real") and motivo_umbral(v["precio_real"])),
+        key=lambda v: v["precio_real"],
+    )[:2]
+    for v in [v for v in vuelos if es_ideal(v)][:1] + vuelos:
         if len(elegidos) == 3:
             break
+        if v not in elegidos:
+            elegidos.append(v)
     return elegidos
+
+
+def verificar_precios(page, vuelos):
+    """Revisa en la página de la aerolínea el vuelo más barato de cada fecha que en la búsqueda sale
+    bajo el tope (tus fechas primero), hasta encontrar uno que de verdad lo esté. El precio "desde"
+    de Google no predice bien el real, así que no basta con mirar solo las 2 o 3 más baratas."""
+    por_fecha = {}
+    for v in vuelos:
+        por_fecha.setdefault((v["salida"], v["regreso"]), v)
+    candidatos = sorted(por_fecha.values(), key=lambda v: (not es_ideal(v), v["total"]))
+    for v in [v for v in candidatos if motivo_umbral(v["total"])][:MAX_VERIFICAR]:
+        completar_reserva(page, v)
+        real = cop(v["precio_real"]) if v.get("precio_real") else "no se pudo leer"
+        print(f"  {v['aerolinea']} {v['salida']} → {v['regreso']}: desde {cop(v['total'])}, real {real}")
+        if v.get("precio_real") and motivo_umbral(v["precio_real"]):
+            return
 
 
 def completar_reserva(page, v):
@@ -596,17 +614,17 @@ def main():
             )
             # Los links de reserva solo se sacan si se va a mandar correo.
             if alerta or resumen:
-                opciones = opciones_para_reservar(vuelos)
-                for v in opciones:
-                    completar_reserva(page, v)
-                for v in opciones:
-                    real = cop(v["precio_real"]) if v.get("precio_real") else "no se pudo leer"
-                    print(f"  {v['aerolinea']} {v['salida']} → {v['regreso']}: desde {cop(v['total'])}, real {real}")
-                # Cada opción se juzga con su propio precio: si la más barata no mostró su precio real,
-                # no se descarta por el precio real (más caro) de otra opción.
-                reales = [v["precio_real"] for v in opciones if v.get("precio_real")]
+                if alerta:
+                    verificar_precios(page, vuelos)
+                for v in opciones_para_reservar(vuelos):  # links de lo que se va a mostrar
+                    if "reserva" not in v:
+                        completar_reserva(page, v)
+                # Cada opción se juzga con su propio precio: si una no mostró su precio real,
+                # no se descarta por el precio real (más caro) de otra.
+                revisados = [v for v in vuelos if "reserva" in v]
+                reales = [v["precio_real"] for v in revisados if v.get("precio_real")]
                 bajo_tope = [r for r in reales if motivo_umbral(r)]
-                sin_leer = [v["total"] for v in opciones if not v.get("precio_real") and motivo_umbral(v["total"])]
+                sin_leer = [v["total"] for v in revisados if not v.get("precio_real") and motivo_umbral(v["total"])]
                 if bajo_tope:
                     confirmado, precio_alerta = True, min(bajo_tope)
                 elif sin_leer:

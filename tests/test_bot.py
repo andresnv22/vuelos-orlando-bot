@@ -122,6 +122,32 @@ class PruebaAlertas(unittest.TestCase):
         self.assertEqual(len(avisos), 1)
         self.assertIn("sin confirmar", avisos[0])
 
+    def test_revisa_otras_fechas_si_la_mas_barata_sale_cara_en_la_aerolinea(self):
+        otras = next(c for c in b.COMBINACIONES if c != b.FECHAS_IDEALES)
+
+        def vuelo(fechas, aerolinea, total):
+            s, r = fechas
+            return {"salida": s.isoformat(), "regreso": r.isoformat(), "noches": (r - s).days,
+                    "aerolinea": aerolinea, "hora": "4:20 PM", "total": total,
+                    "basica": False, "insight": None, "url": "https://ejemplo"}
+
+        # Tus fechas: barato en la búsqueda pero caro en la aerolínea. Otras fechas: un poco más
+        # caro en la búsqueda pero de verdad bajo el tope en la aerolínea.
+        resultados = {b.FECHAS_IDEALES: vuelo(b.FECHAS_IDEALES, "LATAM", self.umbral_total(0.86)),
+                      otras: vuelo(otras, "Avianca", self.umbral_total(0.88))}
+        reales = {"LATAM": self.umbral_total(1.33), "Avianca": self.umbral_total(0.95)}
+        b.buscar = lambda page, s, r: ([dict(resultados[(s, r)])], None, False) if (s, r) in resultados else ([], None, False)
+
+        def completar(page, v):
+            v["reserva"] = "https://reserva"
+            v["precio_real"] = reales[v["aerolinea"]]
+
+        b.completar_reserva = completar
+        avisos = self.revisar(0, 0)
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("¡Precio bueno!", avisos[0])
+        self.assertIn(b.cop(reales["Avianca"]), avisos[0])
+
     def test_guarda_el_historial(self):
         self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))
         self.assertEqual(len(json.loads(b.ESTADO.read_text())["revisiones"]), 1)
