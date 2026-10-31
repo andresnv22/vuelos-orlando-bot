@@ -107,9 +107,13 @@
     {
       "fecha": "2026-10-30T18:55",
       "mejor": 8569988
+    },
+    {
+      "fecha": "2026-10-30T19:56",
+      "mejor": 8569988
     }
   ],
-  "ultima_alerta": null,
+  "ultima_alerta": 9556240,
   "ultimo_resumen": "2026-10-29",
   "ultimo_aviso_error": null,
   "ultimo_aviso_mail": null
