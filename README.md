@@ -8,8 +8,8 @@ que ningún computador esté prendido.
 
 ## Qué hace
 
-- Cada 3 horas, de 6am a 9pm hora de Colombia, busca en Google Flights. GitHub a veces se salta horarios,
-  así que el workflow se despierta cada hora y solo revisa si ya pasaron más de 2h20 desde la última vez:
+- Cada 3 horas, de 6am a 9pm hora de Colombia, busca en Google Flights. GitHub se salta muchos horarios,
+  así que el workflow se despierta cada media hora y solo revisa si ya pasaron más de 2h40 desde la última vez:
   - las **fechas ideales** (22 → 27 dic) y las cercanas (hasta 2 días antes o después, de 4 a 7 noches);
   - solo vuelos **directos**, sin Frontier, para **4 pasajeros**, con precios en **COP**.
 - Cuando el precio parece bueno, abre la página de reserva y lee el **precio real que da la aerolínea**
@@ -22,8 +22,8 @@ que ningún computador esté prendido.
 
 | Correo | Cuándo |
 |---|---|
-| 🔥 **¡Precio bueno!** | El precio real en la aerolínea, ida y vuelta para los 4, queda por debajo del tope (menos de $10.000.000), o el precio "desde" cae 5% bajo el mínimo visto. No se repite salvo que baje otro 2%. |
-| 🔥 **Posible precio bueno (sin confirmar)** | Igual que el anterior, pero no se pudo leer el precio en la aerolínea. |
+| 🔥 **¡Precio bueno!** | El precio real en la aerolínea, ida y vuelta para los 4, queda por debajo del tope (menos de $10.000.000). Llega en cada revisión (cada 3 horas) mientras siga así. También si el precio "desde" cae 5% bajo el mínimo visto (esa no se repite salvo que baje otro 2%). |
+| 🔥 **Posible precio bueno (sin confirmar)** | Bajo el tope, pero no se pudo leer el precio en la aerolínea. No se repite salvo que baje otro 2%. |
 | ✈️ **Resumen semanal** | Los lunes, para saber que el bot sigue vivo. |
 | ⚠️ **No se pudo revisar** | Google no devolvió resultados (máximo uno al día). |
 

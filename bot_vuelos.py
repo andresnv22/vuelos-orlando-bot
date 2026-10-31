@@ -633,7 +633,9 @@ def main():
             # Filtro rápido con el precio "desde" (casi siempre igual o menor que el real):
             # si ni así vale la pena, no hace falta abrir las páginas de reserva.
             motivo = motivo_umbral(mejor["total"]) or motivo_bajada(mejor["total"], estado)
-            alerta = bool(motivo) and (ultima is None or mejor["total"] <= ultima * (1 - REALERTA_SI_BAJA))
+            alerta = bool(motivo_umbral(mejor["total"])) or (
+                bool(motivo) and (ultima is None or mejor["total"] <= ultima * (1 - REALERTA_SI_BAJA))
+            )
             resumen = forzar_resumen or (
                 ahora.weekday() == 0 and ahora.hour >= 8 and estado["ultimo_resumen"] != hoy
             )
@@ -660,10 +662,12 @@ def main():
                 else:
                     confirmado, precio_alerta = False, mejor["total"]
                 if alerta:
-                    # El umbral se confirma con el precio real de la aerolínea; y para no repetir
-                    # la misma alerta, se compara contra la última con ese mismo precio.
+                    # El umbral se confirma con el precio real de la aerolínea. Un precio real bajo el
+                    # tope se avisa en cada revisión (cada 3 horas) mientras siga así; un precio sin
+                    # confirmar o una bajada del "desde" solo se repite si bajó otro poco.
                     motivo = motivo_umbral(precio_alerta) or motivo_bajada(mejor["total"], estado)
-                    alerta = bool(motivo) and (ultima is None or precio_alerta <= ultima * (1 - REALERTA_SI_BAJA))
+                    nuevo = ultima is None or precio_alerta <= ultima * (1 - REALERTA_SI_BAJA)
+                    alerta = bool(motivo) and (nuevo or (confirmado and bool(motivo_umbral(precio_alerta))))
                     if not alerta:
                         razon = "ya se avisó a ese precio" if motivo else "no está bajo el tope"
                         print(f"Alerta descartada ({razon}): {cop(precio_alerta)}")
@@ -682,10 +686,12 @@ def main():
     else:
         mejor, cuerpo = detalle(vuelos, estado)
         if alerta:
+            # La hora en el asunto hace que cada aviso llegue como correo nuevo y no escondido en el anterior.
+            cuando = f"{fecha_corta(hoy)}, {ahora.hour % 12 or 12}:{ahora:%M} {'am' if ahora.hour < 12 else 'pm'}"
             if confirmado:
-                asunto = f"🔥 ¡Precio bueno! BOG→MCO directo {cop(precio_alerta)} COP (4 personas)"
+                asunto = f"🔥 ¡Precio bueno! BOG→MCO directo {cop(precio_alerta)} COP (4 personas) · {cuando}"
             else:  # no se pudo leer el precio en la aerolínea: se avisa igual, pero sin prometer
-                asunto = f"🔥 Posible precio bueno (sin confirmar): BOG→MCO desde {cop(precio_alerta)} COP"
+                asunto = f"🔥 Posible precio bueno (sin confirmar): BOG→MCO desde {cop(precio_alerta)} COP · {cuando}"
             avisos.append((
                 asunto,
                 f"Por qué te aviso: {motivo}.\n\n{cuerpo}",

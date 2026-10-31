@@ -2,11 +2,12 @@ name: Bot vuelos BOG-MCO
 
 on:
   schedule:
-    # GitHub no garantiza los horarios: a veces retrasa o se salta corridas. Por eso se despierta cada
-    # hora (6:23am a 9:23pm hora de Colombia = UTC - 5) y el paso "¿Toca revisar?" solo deja seguir si
-    # ya pasaron más de 2h20 desde la última revisión (así sale una cada 3 horas). Si GitHub se salta una, la siguiente la recupera.
-    # Minuto 23 y no en punto: a las horas en punto GitHub está más saturado.
-    - cron: "23 0-2,11-23 * * *"
+    # GitHub no garantiza los horarios: retrasa y se salta muchas corridas (el 31/10 hizo 2 de 10).
+    # Por eso se despierta cada media hora (6am a 9:59pm hora de Colombia = UTC - 5) y el paso
+    # "¿Toca revisar?" solo deja seguir si ya pasaron más de 2h40 desde la última revisión (así sale
+    # una cada 3 horas). Si GitHub se salta una, la siguiente la recupera.
+    # Minutos 7 y 37 y no en punto: a las horas en punto GitHub está más saturado.
+    - cron: "7,37 0-2,11-23 * * *"
   workflow_dispatch:
     inputs:
       modo:
@@ -42,7 +43,7 @@ jobs:
           if os.environ["EVENTO"] != "schedule":
               si = True  # corrida lanzada a mano
           else:
-              si = 6 <= ahora.hour <= 21 and (ultima is None or ahora - ultima >= timedelta(hours=2, minutes=20))
+              si = 6 <= ahora.hour <= 21 and (ultima is None or ahora - ultima >= timedelta(hours=2, minutes=40))
           print(f"Ahora {ahora:%d/%m %H:%M}, última revisión {ultima:%d/%m %H:%M}" if ultima else "Sin revisiones")
           print("Toca revisar" if si else "Todavía no toca; se espera a la próxima")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:

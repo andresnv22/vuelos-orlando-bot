@@ -83,14 +83,19 @@ class PruebaAlertas(unittest.TestCase):
         self.assertEqual(len(avisos), 1)
         self.assertIn("¡Precio bueno!", avisos[0])
 
-    def test_no_repite_la_misma_alerta(self):
-        self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
-        self.assertEqual(self.revisar(self.umbral_total(0.94), self.umbral_total(0.98)), [])
-        self.assertEqual(self.revisar(self.umbral_total(0.93), self.umbral_total(0.97)), [])  # bajó solo 1%
+    def test_repite_en_cada_revision_mientras_siga_bajo_el_tope(self):
+        for _ in range(3):
+            self.assertEqual(len(self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))), 1)
+        self.assertEqual(self.revisar(self.umbral_total(0.94), self.umbral_total(1.02)), [])  # ya no está bajo el tope
 
-    def test_vuelve_a_avisar_si_baja_otro_poco(self):
-        self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
-        self.assertEqual(len(self.revisar(self.umbral_total(0.92), self.umbral_total(0.95))), 1)  # bajó 3%
+    def test_no_repite_el_posible_precio_sin_confirmar(self):
+        self.revisar(self.umbral_total(0.85), None)
+        self.assertEqual(self.revisar(self.umbral_total(0.85), None), [])
+        self.assertEqual(self.revisar(self.umbral_total(0.84), None), [])  # bajó solo 1%
+
+    def test_el_posible_precio_vuelve_a_avisar_si_baja_otro_poco(self):
+        self.revisar(self.umbral_total(0.85), None)
+        self.assertEqual(len(self.revisar(self.umbral_total(0.82), None)), 1)  # bajó 3,5%
 
     def test_no_avisa_si_solo_el_desde_es_bueno(self):
         self.assertEqual(self.revisar(self.umbral_total(0.95), self.umbral_total(1.07)), [])
