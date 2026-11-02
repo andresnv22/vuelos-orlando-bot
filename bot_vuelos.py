@@ -2,10 +2,10 @@
 
 Revisa en Google Flights varias combinaciones de fechas (mínimo 4 noches),
 solo vuelos directos, sin Frontier, precios en COP para 4 adultos.
-Solo manda correo cuando el precio es realmente bueno:
-  - el precio total ida y vuelta para todos queda por debajo de UMBRAL_TOTAL, o
-  - aparece un mínimo nuevo al menos BAJADA_FUERTE más barato que el mínimo visto.
-Además manda un resumen semanal (lunes) para que sepas que sigue vivo.
+Solo manda correo cuando el precio real en la aerolínea (ida y vuelta en una sola reserva,
+para todos) queda por debajo de UMBRAL_TOTAL, y lo repite en cada revisión mientras siga así.
+Avisa una vez cuando el precio vuelve a subir, y manda un resumen semanal (lunes) si no hubo
+otros avisos, para que sepas que sigue vivo.
 
 Uso:
     python3 bot_vuelos.py              # revisa y avisa si hay algo bueno
@@ -45,9 +45,6 @@ FLEXIBILIDAD_DIAS = CONFIG["flexibilidad_dias"]  # días antes o después, en la
 NOCHES_MIN, NOCHES_MAX = CONFIG["noches_min"], CONFIG["noches_max"]
 EXCLUIR = [a.lower() for a in CONFIG["excluir_aerolineas"]]
 UMBRAL_TOTAL = CONFIG["umbral_total_cop"]  # COP ida y vuelta para todos: avisa si el precio queda por debajo
-BAJADA_FUERTE = CONFIG["bajada_fuerte"]  # caída contra el mínimo visto que también cuenta como buena
-MIN_REVISIONES_PARA_BAJADA = CONFIG["min_revisiones_para_bajada"]  # no comparar contra un historial corto
-REALERTA_SI_BAJA = CONFIG["realerta_si_baja"]  # tras avisar, solo vuelve a avisar si baja esto más
 MAX_VERIFICAR = 8  # cuántas fechas como máximo se revisan en la página de la aerolínea por corrida
 # ------------------------------------------------
 
@@ -202,7 +199,10 @@ def verificar_precios(page, vuelos):
 def completar_reserva(page, v):
     """Pone en v el link de la página de reserva de Google (botón "Reservar con
     <aerolínea>" que lleva a su web oficial) y el precio real que da la aerolínea ahí."""
-    v["reserva"] = link_reserva_google(page, v)
+    for _ in range(2):  # a veces Google no reacciona al clic; un segundo intento casi siempre funciona
+        v["reserva"] = link_reserva_google(page, v)
+        if v["reserva"]:
+            break
     v["precio_real"] = None
     v["solo_separados"] = False
     if not v["reserva"]:
@@ -262,20 +262,9 @@ def link_reserva_google(page, v):
 
 
 def motivo_umbral(total):
-    """Motivo si el precio total (para los 4) queda debajo del umbral por persona, o None."""
+    """Motivo si el precio total (para los 4) queda debajo del tope, o None."""
     if total < UMBRAL_TOTAL:
         return f"{cop(total)} ida y vuelta para los {PASAJEROS}, menos de tu tope de {cop(UMBRAL_TOTAL)}"
-    return None
-
-
-def motivo_bajada(total_desde, estado):
-    """Motivo si el precio "desde" cae fuerte contra el historial, que también guarda precios "desde"."""
-    revisiones = estado["revisiones"]
-    if len(revisiones) >= MIN_REVISIONES_PARA_BAJADA:
-        minimo = min(r["mejor"] for r in revisiones)
-        if total_desde <= minimo * (1 - BAJADA_FUERTE):
-            pct = round((1 - total_desde / minimo) * 100)
-            return f"{pct}% más barato que el mínimo visto ({cop(minimo)})"
     return None
 
 
@@ -601,7 +590,7 @@ def main():
 
     estado = json.loads(ESTADO.read_text()) if ESTADO.exists() else {}
     estado.setdefault("revisiones", [])
-    estado.setdefault("ultima_alerta", None)
+    estado.setdefault("bajo_tope", False)  # si el último aviso fue de un precio bajo el tope
     estado.setdefault("ultimo_resumen", None)
     estado.setdefault("ultimo_aviso_error", None)
     estado.setdefault("ultimo_aviso_mail", None)
@@ -615,6 +604,8 @@ def main():
                 continue
             try:
                 encontrados, _, bloqueado = buscar(page, salida, regreso)
+                if not encontrados and not bloqueado:  # a veces la lista no alcanza a cargar
+                    encontrados, _, bloqueado = buscar(page, salida, regreso)
             except Exception as e:  # una fecha que falla no tumba toda la revisión
                 print(f"{salida} → {regreso}: error {type(e).__name__}")
                 continue
@@ -624,53 +615,34 @@ def main():
             vuelos += encontrados
             page.wait_for_timeout(random.randint(2000, 6000))  # ir despacio
 
-        alerta = resumen = confirmado = False
+        resumen = False
         motivo = precio_alerta = None
+        sin_confirmar = []
         if vuelos:
             vuelos.sort(key=lambda v: v["total"])
             mejor = vuelos[0]
-            ultima = estado["ultima_alerta"]
-            # Filtro rápido con el precio "desde" (casi siempre igual o menor que el real):
-            # si ni así vale la pena, no hace falta abrir las páginas de reserva.
-            motivo = motivo_umbral(mejor["total"]) or motivo_bajada(mejor["total"], estado)
-            alerta = bool(motivo_umbral(mejor["total"])) or (
-                bool(motivo) and (ultima is None or mejor["total"] <= ultima * (1 - REALERTA_SI_BAJA))
-            )
             resumen = forzar_resumen or (
                 ahora.weekday() == 0 and ahora.hour >= 8 and estado["ultimo_resumen"] != hoy
             )
-            # Los links de reserva solo se sacan si se va a mandar correo.
-            if alerta or resumen:
-                if alerta:
-                    verificar_precios(page, vuelos)
+            # Filtro rápido con el precio "desde" (casi siempre igual o menor que el real):
+            # si ni así queda bajo el tope, no hace falta abrir las páginas de reserva.
+            hay_candidatos = bool(motivo_umbral(mejor["total"]))
+            if hay_candidatos:
+                verificar_precios(page, vuelos)
+            if hay_candidatos or resumen:
                 for v in opciones_para_reservar(vuelos):  # links de lo que se va a mostrar
                     if "reserva" not in v:
                         completar_reserva(page, v)
-                # Cada opción se juzga con su propio precio: si una no mostró su precio real,
-                # no se descarta por el precio real (más caro) de otra.
-                revisados = [v for v in vuelos if "reserva" in v]
-                reales = [v["precio_real"] for v in revisados if v.get("precio_real")]
-                bajo_tope = [r for r in reales if motivo_umbral(r)]
-                sin_leer = [v["total"] for v in revisados
-                            if not v.get("precio_real") and not v.get("solo_separados") and motivo_umbral(v["total"])]
-                if bajo_tope:
-                    confirmado, precio_alerta = True, min(bajo_tope)
-                elif sin_leer:
-                    confirmado, precio_alerta = False, min(sin_leer)
-                elif reales:
-                    confirmado, precio_alerta = True, min(reales)
-                else:
-                    confirmado, precio_alerta = False, mejor["total"]
-                if alerta:
-                    # El umbral se confirma con el precio real de la aerolínea. Un precio real bajo el
-                    # tope se avisa en cada revisión (cada 3 horas) mientras siga así; un precio sin
-                    # confirmar o una bajada del "desde" solo se repite si bajó otro poco.
-                    motivo = motivo_umbral(precio_alerta) or motivo_bajada(mejor["total"], estado)
-                    nuevo = ultima is None or precio_alerta <= ultima * (1 - REALERTA_SI_BAJA)
-                    alerta = bool(motivo) and (nuevo or (confirmado and bool(motivo_umbral(precio_alerta))))
-                    if not alerta:
-                        razon = "ya se avisó a ese precio" if motivo else "no está bajo el tope"
-                        print(f"Alerta descartada ({razon}): {cop(precio_alerta)}")
+            # Solo cuenta el precio real de la aerolínea, ida y vuelta en una sola reserva. Cada opción
+            # se juzga con su propio precio, y un "desde" sin confirmar nunca se presenta como bueno.
+            revisados = [v for v in vuelos if "reserva" in v]
+            bajo_tope = [v["precio_real"] for v in revisados if v.get("precio_real") and motivo_umbral(v["precio_real"])]
+            if bajo_tope:
+                precio_alerta = min(bajo_tope)
+                motivo = motivo_umbral(precio_alerta)
+            else:
+                sin_confirmar = [v["total"] for v in revisados if not v.get("precio_real")
+                                 and not v.get("solo_separados") and motivo_umbral(v["total"])]
         browser.close()
 
     # Cada aviso lleva los cambios de estado que solo se guardan si de verdad sale,
@@ -685,27 +657,54 @@ def main():
             avisos.append(("⚠️ Bot vuelos BOG→MCO: no se pudo revisar", texto, texto, {"ultimo_aviso_error": hoy}, None))
     else:
         mejor, cuerpo = detalle(vuelos, estado)
-        if alerta:
-            # La hora en el asunto hace que cada aviso llegue como correo nuevo y no escondido en el anterior.
-            cuando = f"{fecha_corta(hoy)}, {ahora.hour % 12 or 12}:{ahora:%M} {'am' if ahora.hour < 12 else 'pm'}"
-            if confirmado:
-                asunto = f"🔥 ¡Precio bueno! BOG→MCO directo {cop(precio_alerta)} COP (4 personas) · {cuando}"
-            else:  # no se pudo leer el precio en la aerolínea: se avisa igual, pero sin prometer
-                asunto = f"🔥 Posible precio bueno (sin confirmar): BOG→MCO desde {cop(precio_alerta)} COP · {cuando}"
+        # La hora en el asunto hace que cada aviso llegue como correo nuevo y no escondido en el anterior.
+        cuando = f"{fecha_corta(hoy)}, {ahora.hour % 12 or 12}:{ahora:%M} {'am' if ahora.hour < 12 else 'pm'}"
+        if precio_alerta:
+            # Se avisa en cada revisión (cada 3 horas) mientras el precio real siga bajo el tope.
             avisos.append((
-                asunto,
+                f"🔥 ¡Precio bueno! BOG→MCO directo {cop(precio_alerta)} COP (4 personas) · {cuando}",
                 f"Por qué te aviso: {motivo}.\n\n{cuerpo}",
                 texto_recordatorio(vuelos, motivo),
-                {"ultima_alerta": precio_alerta},
+                {"bajo_tope": True},
                 f"🔥 Por qué te aviso: {motivo}.",
             ))
-        # Si ya sale un aviso de precio bueno, ese mismo dice que el bot sigue vivo: el resumen
-        # ("todavía no hay un precio que valga la pena") sobra y se manda en otra revisión sin alerta.
-        if resumen and (forzar_resumen or not alerta):
+        elif sin_confirmar:
+            # La página de la aerolínea no mostró el precio: no se sabe si está bajo el tope, y el
+            # "desde" no sirve para decidir (suele salir bastante más bajo que el real).
+            print(f"No se pudo confirmar el precio real (desde {cop(min(sin_confirmar))})")
+            if estado["ultimo_aviso_error"] != hoy:  # un solo aviso de este tipo por día
+                intro = (
+                    "No pude leer el precio real en la página de la aerolínea, así que no sé si hay algo bajo "
+                    f"tu tope de {cop(UMBRAL_TOTAL)}. En la búsqueda sale desde {cop(min(sin_confirmar))}, pero "
+                    "el precio real suele ser más alto. Lo vuelvo a intentar en la próxima revisión."
+                )
+                avisos.append((
+                    "⚠️ Bot vuelos BOG→MCO: no pude confirmar el precio real",
+                    f"{intro}\n\n{cuerpo}",
+                    f"{intro}\n\n{texto_recordatorio(vuelos)}",
+                    {"ultimo_aviso_error": hoy},
+                    f"⚠️ {intro}",
+                ))
+        elif estado["bajo_tope"]:
+            # Venía avisando cada 3 horas y ya no hay nada bajo el tope: se avisa una vez, para que el
+            # silencio que sigue no parezca que el bot dejó de funcionar.
+            intro = (
+                f"El precio subió: en las fechas que revisé ya no hay nada bajo tu tope de {cop(UMBRAL_TOTAL)} "
+                f"ida y vuelta para los {PASAJEROS}. Sigo revisando cada 3 horas y te aviso apenas vuelva a bajar."
+            )
+            avisos.append((
+                f"⬆️ Subió el precio BOG→MCO: ya no está bajo tu tope · {cuando}",
+                f"{intro}\n\n{cuerpo}",
+                f"{intro}\n\n{texto_recordatorio(vuelos)}",
+                {"bajo_tope": False},
+                f"⬆️ {intro}",
+            ))
+        # Si ya sale otro aviso, ese mismo dice que el bot sigue vivo: el resumen ("todavía no hay un
+        # precio que valga la pena") sobra y se manda en otra revisión sin avisos.
+        if resumen and (forzar_resumen or not avisos):
             intro = (
                 "Resumen semanal: todavía no hay un precio que valga la pena, sigo vigilando.\n"
-                f"Te aviso apenas baje de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS} "
-                f"o caiga {round(BAJADA_FUERTE * 100)}% bajo el mínimo visto.\n\n"
+                f"Te aviso apenas el precio real baje de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS}.\n\n"
             )
             avisos.append((
                 f"✈️ Resumen semanal BOG→MCO: desde {cop(mejor['total'])} COP",

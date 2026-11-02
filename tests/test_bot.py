@@ -98,30 +98,32 @@ class PruebaAlertas(unittest.TestCase):
     def test_repite_en_cada_revision_mientras_siga_bajo_el_tope(self):
         for _ in range(3):
             self.assertEqual(len(self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))), 1)
-        self.assertEqual(self.revisar(self.umbral_total(0.94), self.umbral_total(1.02)), [])  # ya no está bajo el tope
 
-    def test_no_repite_el_posible_precio_sin_confirmar(self):
-        self.revisar(self.umbral_total(0.85), None)
-        self.assertEqual(self.revisar(self.umbral_total(0.85), None), [])
-        self.assertEqual(self.revisar(self.umbral_total(0.84), None), [])  # bajó solo 1%
+    def test_avisa_una_sola_vez_cuando_el_precio_sube(self):
+        self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
+        subio = self.revisar(self.umbral_total(0.94), self.umbral_total(1.02))  # el real ya no está bajo el tope
+        self.assertEqual(len(subio), 1)
+        self.assertIn("Subió el precio", subio[0])
+        self.assertEqual(self.revisar(self.umbral_total(1.3), self.umbral_total(1.4)), [])
+        self.assertEqual(len(self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))), 1)  # bajó otra vez
 
-    def test_el_posible_precio_vuelve_a_avisar_si_baja_otro_poco(self):
-        self.revisar(self.umbral_total(0.85), None)
-        self.assertEqual(len(self.revisar(self.umbral_total(0.82), None)), 1)  # bajó 3,5%
+    def test_sin_subir_desde_un_precio_bueno_no_avisa_que_subio(self):
+        self.assertEqual(self.revisar(self.umbral_total(1.3), self.umbral_total(1.4)), [])
 
     def test_no_avisa_si_solo_el_desde_es_bueno(self):
         self.assertEqual(self.revisar(self.umbral_total(0.95), self.umbral_total(1.07)), [])
 
-    def test_sin_precio_real_avisa_sin_confirmar(self):
+    def test_sin_precio_real_avisa_una_vez_al_dia_que_no_pudo_confirmar(self):
         avisos = self.revisar(self.umbral_total(0.85), None)
         self.assertEqual(len(avisos), 1)
-        self.assertIn("sin confirmar", avisos[0])
+        self.assertIn("no pude confirmar", avisos[0])
+        self.assertNotIn("Precio bueno", avisos[0])
+        self.assertEqual(self.revisar(self.umbral_total(0.85), None), [])
 
-    def test_bajada_fuerte_del_desde_avisa(self):
+    def test_nunca_dice_precio_bueno_sobre_el_tope_aunque_el_desde_baje_mucho(self):
         historial = self.umbral_total(1.20)
-        self.guardar_estado([{"fecha": "2026-11-01T06:00", "mejor": historial}] * b.MIN_REVISIONES_PARA_BAJADA)
-        avisos = self.revisar(int(historial * 0.94), self.umbral_total(1.21))
-        self.assertEqual(len(avisos), 1)
+        self.guardar_estado([{"fecha": "2026-11-01T06:00", "mejor": historial}] * 10)
+        self.assertEqual(self.revisar(self.umbral_total(0.90), self.umbral_total(1.05)), [])
 
     def test_no_descarta_por_el_precio_real_de_otra_opcion(self):
         self.precios.update(desde=0, real=None)
@@ -137,7 +139,7 @@ class PruebaAlertas(unittest.TestCase):
         b.completar_reserva = completar
         avisos = self.revisar(0, 0)
         self.assertEqual(len(avisos), 1)
-        self.assertIn("sin confirmar", avisos[0])
+        self.assertIn("no pude confirmar", avisos[0])  # no se descarta en silencio
 
     def test_revisa_otras_fechas_si_la_mas_barata_sale_cara_en_la_aerolinea(self):
         otras = next(c for c in b.COMBINACIONES if c != b.FECHAS_IDEALES)
@@ -168,11 +170,28 @@ class PruebaAlertas(unittest.TestCase):
     def test_el_lunes_no_manda_resumen_si_ya_sale_el_precio_bueno(self):
         self.ahora = datetime(2026, 11, 2, 10, 0)  # lunes
         con_alerta = self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
-        sin_alerta = self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))
+        subio = self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))
+        sin_avisos = self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))
         self.assertEqual(len(con_alerta), 1)
         self.assertIn("¡Precio bueno!", con_alerta[0])
-        self.assertEqual(len(sin_alerta), 1)
-        self.assertIn("Resumen semanal", sin_alerta[0])
+        self.assertEqual(len(subio), 1)
+        self.assertIn("Subió el precio", subio[0])
+        self.assertEqual(len(sin_avisos), 1)
+        self.assertIn("Resumen semanal", sin_avisos[0])
+
+    def test_reintenta_una_fecha_que_no_cargo(self):
+        llamadas = []
+
+        def buscar(page, s, r):  # la primera vez tus fechas no cargan
+            llamadas.append((s, r))
+            if (s, r) == b.FECHAS_IDEALES and llamadas.count((s, r)) == 1:
+                return [], None, False
+            return self._buscar(page, s, r)
+
+        b.buscar = buscar
+        avisos = self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("¡Precio bueno!", avisos[0])
 
     def test_guarda_el_historial(self):
         self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))
@@ -221,6 +240,22 @@ class PruebaPaginaDeReserva(unittest.TestCase):
 
     def test_si_solo_hay_separados_no_da_precio(self):
         self.assertEqual(b.precio_ida_vuelta("Booking options\n" + self.SEPARADOS_MISMA, "LATAM"), (None, True))
+
+    def test_reintenta_el_link_si_el_primer_clic_falla(self):
+        intentos = []
+        original = b.link_reserva_google
+        b.link_reserva_google = lambda page, v: intentos.append(1) or ("https://reserva" if len(intentos) > 1 else None)
+
+        class Pagina(_Falso):
+            def inner_text(self, selector):
+                return PruebaPaginaDeReserva.JUNTA
+
+        try:
+            v = {"aerolinea": "Avianca"}
+            b.completar_reserva(Pagina(), v)
+        finally:
+            b.link_reserva_google = original
+        self.assertEqual((len(intentos), v["reserva"], v["precio_real"]), (2, "https://reserva", 9_556_240))
 
     def test_no_confunde_otra_aerolinea(self):
         self.assertEqual(b.precio_ida_vuelta(self.JUNTA, "LATAM"), (None, False))
