@@ -1,5 +1,10 @@
 {
-  "revisiones": [],
+  "revisiones": [
+    {
+      "fecha": "2026-11-02T18:27",
+      "mejor": 9517440
+    }
+  ],
   "bajo_tope": true,
   "ultimo_resumen": "2026-11-02",
   "ultimo_aviso_error": null,
