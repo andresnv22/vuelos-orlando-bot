@@ -2,6 +2,7 @@
 
 Correr con:  python -m unittest discover -s tests -v
 """
+import base64
 import contextlib
 import json
 import sys
@@ -106,6 +107,11 @@ class PruebaAlertas(unittest.TestCase):
         self.assertIn("Subió el precio", subio[0])
         self.assertEqual(self.revisar(self.umbral_total(1.3), self.umbral_total(1.4)), [])
         self.assertEqual(len(self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))), 1)  # bajó otra vez
+
+    def test_revisa_la_aerolinea_aunque_el_desde_salga_un_poco_sobre_el_tope(self):
+        avisos = self.revisar(self.umbral_total(1.03), self.umbral_total(0.98))
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("¡Precio bueno!", avisos[0])
 
     def test_sin_subir_desde_un_precio_bueno_no_avisa_que_subio(self):
         self.assertEqual(self.revisar(self.umbral_total(1.3), self.umbral_total(1.4)), [])
@@ -224,9 +230,59 @@ class PruebaCorreoYConfig(unittest.TestCase):
 
 
 
+class PruebaBusqueda(unittest.TestCase):
+    def test_busca_solo_directos_de_avianca_y_latam_para_los_4(self):
+        tfs = b.url_busqueda(*b.FECHAS_IDEALES).split("tfs=")[1].split("&")[0]
+        datos = base64.urlsafe_b64decode(tfs + "=" * (-len(tfs) % 4))
+        self.assertEqual(datos.count(b"\x28\x00"), 2)  # máximo 0 escalas, en la ida y en la vuelta
+        self.assertEqual(datos.count(b"\x32\x02AV"), 2)
+        self.assertEqual(datos.count(b"\x32\x02LA"), 2)
+        self.assertNotIn(b"F9", datos)  # Frontier
+        self.assertEqual(datos.count(b"\x40\x01"), b.PASAJEROS)  # adultos
+        self.assertIn(b"2026-12-22", datos)
+        self.assertIn(b"2026-12-27", datos)
+
+    def test_descarta_otras_aerolineas_si_google_no_aplica_el_filtro(self):
+        etiquetas = [
+            "From 4536736 Colombian pesos round trip total.This price does not include overhead bin access. "
+            "Nonstop flight with Frontier. Leaves El Dorado International Airport at 3:20 PM on Tuesday",
+            "From 9517440 Colombian pesos round trip total. Nonstop flight with LATAM. Operated by Latam Airlines "
+            "Colombia. Leaves El Dorado International Airport at 10:35 AM on Wednesday",
+        ]
+
+        class Pagina(_Falso):
+            url = "https://www.google.com/travel/flights/search"
+
+            def goto(self, *a, **k):
+                pass
+
+            def content(self):
+                return ""
+
+            def wait_for_selector(self, *a, **k):
+                pass
+
+            def eval_on_selector_all(self, *a):
+                return etiquetas
+
+            def inner_text(self, selector):
+                return ""
+
+        vuelos, _, _ = b.buscar(Pagina(), *b.FECHAS_IDEALES)
+        self.assertEqual([(v["aerolinea"], v["total"]) for v in vuelos], [("LATAM", 9_517_440)])
+
+
 class PruebaPaginaDeReserva(unittest.TestCase):
     # Textos como los que muestra Google Flights en la página de reserva (en inglés).
-    JUNTA = "Booking options\nBook with AviancaAirline\nCOP\xa09,556,240\nContinue\nView options\n"
+    PIE = "Prices include required taxes + fees for 4 adults. Optional charges and bag fees may apply.\n"
+    JUNTA = "Booking options\nBook with AviancaAirline\nCOP\xa09,556,240\nContinue\nView options\n" + PIE
+    # Copiado de la página real (LATAM 23 → 28 dic, 2/11/2026): Delta vende los mismos vuelos más barato
+    # y cobra en dólares, y hay una opción de billetes separados.
+    CON_DELTA = ("4 passengers\nCOP 9,256,091\nLowest total price\nBooking options\n"
+                 "Book with DeltaAirline\nCOP 9,256,091\n$2,898\nContinue\nView options\n"
+                 "Book with LATAMAirline\nCOP 9,461,400\nContinue\nView options\n"
+                 "Book with LATAMAirline\nSeparate ticketsThe 2 tickets in your itinerary must be booked "
+                 "individually\nCOP 11,670,840\nContinue\nView options\n") + PIE
     SEPARADOS = ("Book with LATAM, DeltaAirline\nSeparate tickets\nThe 2 tickets in this itinerary must be "
                  "booked separately\nCOP\xa014,748,866\nContinue\n")
     SEPARADOS_MISMA = "Book with LATAMAirline\nSeparate tickets\nCOP\xa08,100,000\nContinue\n"
@@ -235,11 +291,20 @@ class PruebaPaginaDeReserva(unittest.TestCase):
         self.assertEqual(b.precio_ida_vuelta(self.JUNTA, "Avianca"), (9_556_240, False))
 
     def test_ignora_tiquetes_separados_aunque_sean_mas_baratos(self):
-        texto = "Booking options\n" + self.SEPARADOS_MISMA + "Book with LATAMAirline\nCOP\xa011,288,920\nContinue\n"
+        texto = ("Booking options\n" + self.SEPARADOS_MISMA + "Book with LATAMAirline\nCOP\xa011,288,920\nContinue\n"
+                 + self.PIE)
         self.assertEqual(b.precio_ida_vuelta(texto, "LATAM"), (11_288_920, False))
 
     def test_si_solo_hay_separados_no_da_precio(self):
-        self.assertEqual(b.precio_ida_vuelta("Booking options\n" + self.SEPARADOS_MISMA, "LATAM"), (None, True))
+        self.assertEqual(b.precio_ida_vuelta("Booking options\n" + self.SEPARADOS_MISMA + self.PIE, "LATAM"),
+                         (None, True))
+
+    def test_no_cuenta_el_precio_de_delta_aunque_sea_el_mas_bajo(self):
+        self.assertEqual(b.precio_ida_vuelta(self.CON_DELTA, "LATAM"), (9_461_400, False))
+
+    def test_no_lee_un_precio_que_no_sea_para_los_4(self):
+        texto = self.JUNTA.replace("for 4 adults", "for 1 adult")
+        self.assertEqual(b.precio_ida_vuelta(texto, "Avianca"), (None, False))
 
     def test_reintenta_el_link_si_el_primer_clic_falla(self):
         intentos = []

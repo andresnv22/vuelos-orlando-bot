@@ -7,8 +7,9 @@
   "flexibilidad_dias": 2,
   "noches_min": 4,
   "noches_max": 7,
-  "excluir_aerolineas": [
-    "frontier"
-  ],
+  "aerolineas": {
+    "AV": "Avianca",
+    "LA": "LATAM"
+  },
   "umbral_total_cop": 10000000
 }

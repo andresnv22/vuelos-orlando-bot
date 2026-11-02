@@ -12,12 +12,16 @@ que ningún computador esté prendido.
   [despertador](#despertador) a las 6, 9, 12, 3, 6 y 9 en punto. El horario propio de GitHub
   (cada media hora, solo revisa si ya pasaron más de 2h40) queda de respaldo, porque GitHub se salta muchas corridas:
   - las **fechas ideales** (22 → 27 dic) y las cercanas (hasta 2 días antes o después, de 4 a 7 noches);
-  - solo vuelos **directos**, sin Frontier, para **4 pasajeros**, con precios en **COP**.
-- Cuando el precio parece bueno, abre la página de reserva y lee el **precio real que da la aerolínea**
-  (puede ser mucho más alto que el "desde" de la búsqueda). Revisa hasta 8 fechas, empezando por las ideales,
-  hasta encontrar una que de verdad esté bajo el tope. Si una fecha o un link no cargan, lo intenta una vez más.
-- Manda un correo con diseño, botones para **reservar en la web oficial** de Avianca o LATAM y una
-  **gráfica** de cómo ha ido el precio.
+  - solo vuelos **directos de Avianca y LATAM** (sin Frontier), para **4 pasajeros**, con precios en **COP**.
+    El filtro va en la búsqueda misma: si Frontier entra, Google arma el "desde" de LATAM o Avianca con la
+    vuelta en Frontier, que son tiquetes separados.
+- Cuando el precio está bajo el tope o cerca, abre la página de reserva y lee el **precio real que da la aerolínea**
+  en la línea "Book with LATAM/Avianca · Airline" (ida y vuelta en una sola compra, para los 4). No cuenta
+  "Separate tickets" ni otras aerolíneas que venden los mismos vuelos (Delta vende vuelos de LATAM en dólares).
+  Revisa hasta 8 fechas, empezando por las ideales, hasta encontrar una que de verdad esté bajo el tope.
+  Si una fecha o un link no cargan, lo intenta una vez más.
+- Manda un correo con diseño, botones para **reservar en la web oficial** de Avianca o LATAM, el link a
+  **la misma búsqueda que hizo el bot** y una **gráfica** de cómo ha ido el precio.
 
 ## Cuándo llega un correo
 
@@ -40,7 +44,7 @@ Todo está en [`config.json`](config.json); no hace falta tocar el código:
 | `fechas_ideales` | Salida y regreso que de verdad quieren. |
 | `flexibilidad_dias` | Cuántos días antes o después se aceptan, en la ida y en la vuelta. |
 | `noches_min`, `noches_max` | Duración aceptable del viaje. |
-| `excluir_aerolineas` | Aerolíneas que no interesan. |
+| `aerolineas` | Aerolíneas que se buscan: código IATA y nombre como sale en Google (`AV` Avianca, `LA` LATAM). |
 | `umbral_total_cop` | Tope del precio ida y vuelta **para todos**: se avisa si queda por debajo (hoy 10.000.000). |
 
 El bot se apaga solo el día antes de la última salida posible (23 dic). Después hay que borrar el
