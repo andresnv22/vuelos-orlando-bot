@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -33,7 +34,19 @@ class PruebaAlertas(unittest.TestCase):
         self.precios = {}
         self.enviados = []
         self.originales = {n: getattr(b, n) for n in
-                           ("sync_playwright", "abrir_navegador", "buscar", "completar_reserva", "avisar", "ESTADO")}
+                           ("sync_playwright", "abrir_navegador", "buscar", "completar_reserva", "avisar", "ESTADO",
+                            "datetime")}
+        # Reloj fijo para que el resultado no dependa del día en que se corren las pruebas:
+        # un martes no toca resumen semanal (los lunes sí).
+        self.ahora = datetime(2026, 11, 3, 10, 0)
+        prueba = self
+
+        class Reloj(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return prueba.ahora
+
+        b.datetime = Reloj
         b.sync_playwright = _sin_playwright
         b.abrir_navegador = lambda p: (_Falso(), _Falso())
         b.buscar = self._buscar
@@ -52,8 +65,7 @@ class PruebaAlertas(unittest.TestCase):
         self.tmp.cleanup()
 
     def guardar_estado(self, revisiones):
-        # ultimo_resumen en el futuro para que el resumen semanal no se mezcle con las pruebas
-        b.ESTADO.write_text(json.dumps({"revisiones": revisiones, "ultimo_resumen": "2099-01-01"}))
+        b.ESTADO.write_text(json.dumps({"revisiones": revisiones}))
 
     def _buscar(self, page, salida, regreso):
         if (salida, regreso) != b.FECHAS_IDEALES:
@@ -152,6 +164,15 @@ class PruebaAlertas(unittest.TestCase):
         self.assertEqual(len(avisos), 1)
         self.assertIn("¡Precio bueno!", avisos[0])
         self.assertIn(b.cop(reales["Avianca"]), avisos[0])
+
+    def test_el_lunes_no_manda_resumen_si_ya_sale_el_precio_bueno(self):
+        self.ahora = datetime(2026, 11, 2, 10, 0)  # lunes
+        con_alerta = self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
+        sin_alerta = self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))
+        self.assertEqual(len(con_alerta), 1)
+        self.assertIn("¡Precio bueno!", con_alerta[0])
+        self.assertEqual(len(sin_alerta), 1)
+        self.assertIn("Resumen semanal", sin_alerta[0])
 
     def test_guarda_el_historial(self):
         self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))

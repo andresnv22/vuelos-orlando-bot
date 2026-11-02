@@ -699,7 +699,9 @@ def main():
                 {"ultima_alerta": precio_alerta},
                 f"🔥 Por qué te aviso: {motivo}.",
             ))
-        if resumen:
+        # Si ya sale un aviso de precio bueno, ese mismo dice que el bot sigue vivo: el resumen
+        # ("todavía no hay un precio que valga la pena") sobra y se manda en otra revisión sin alerta.
+        if resumen and (forzar_resumen or not alerta):
             intro = (
                 "Resumen semanal: todavía no hay un precio que valga la pena, sigo vigilando.\n"
                 f"Te aviso apenas baje de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS} "
