@@ -10,8 +10,5 @@
   "excluir_aerolineas": [
     "frontier"
   ],
-  "umbral_total_cop": 10000000,
-  "bajada_fuerte": 0.05,
-  "min_revisiones_para_bajada": 4,
-  "realerta_si_baja": 0.02
+  "umbral_total_cop": 10000000
 }

@@ -15,7 +15,7 @@ que ningún computador esté prendido.
   - solo vuelos **directos**, sin Frontier, para **4 pasajeros**, con precios en **COP**.
 - Cuando el precio parece bueno, abre la página de reserva y lee el **precio real que da la aerolínea**
   (puede ser mucho más alto que el "desde" de la búsqueda). Revisa hasta 8 fechas, empezando por las ideales,
-  hasta encontrar una que de verdad esté bajo el tope.
+  hasta encontrar una que de verdad esté bajo el tope. Si una fecha o un link no cargan, lo intenta una vez más.
 - Manda un correo con diseño, botones para **reservar en la web oficial** de Avianca o LATAM y una
   **gráfica** de cómo ha ido el precio.
 
@@ -23,10 +23,10 @@ que ningún computador esté prendido.
 
 | Correo | Cuándo |
 |---|---|
-| 🔥 **¡Precio bueno!** | El precio real en la aerolínea, ida y vuelta para los 4, queda por debajo del tope (menos de $10.000.000). Llega en cada revisión (cada 3 horas) mientras siga así. También si el precio "desde" cae 5% bajo el mínimo visto (esa no se repite salvo que baje otro 2%). |
-| 🔥 **Posible precio bueno (sin confirmar)** | Bajo el tope, pero no se pudo leer el precio en la aerolínea. No se repite salvo que baje otro 2%. |
-| ✈️ **Resumen semanal** | Los lunes, para saber que el bot sigue vivo. |
-| ⚠️ **No se pudo revisar** | Google no devolvió resultados (máximo uno al día). |
+| 🔥 **¡Precio bueno!** | El precio real en la aerolínea, ida y vuelta en una sola reserva para los 4, queda por debajo del tope (menos de $10.000.000). Llega en cada revisión (cada 3 horas) mientras siga así. El precio "desde" de la búsqueda nunca basta. |
+| ⬆️ **Subió el precio** | Una sola vez, cuando venía avisando y el precio real ya no está bajo el tope. Después no llega nada hasta que vuelva a bajar. |
+| ✈️ **Resumen semanal** | Los lunes, si ese día no salió otro aviso, para saber que el bot sigue vivo. |
+| ⚠️ **No se pudo revisar** / **no pude confirmar el precio real** | Google no devolvió resultados, o la página de la aerolínea no mostró el precio de una opción que en la búsqueda sale bajo el tope (máximo uno al día). |
 
 Si un correo no se puede enviar, la corrida queda en rojo y GitHub avisa por correo a la cuenta del repositorio.
 
@@ -42,10 +42,9 @@ Todo está en [`config.json`](config.json); no hace falta tocar el código:
 | `noches_min`, `noches_max` | Duración aceptable del viaje. |
 | `excluir_aerolineas` | Aerolíneas que no interesan. |
 | `umbral_total_cop` | Tope del precio ida y vuelta **para todos**: se avisa si queda por debajo (hoy 10.000.000). |
-| `bajada_fuerte` | Caída contra el mínimo visto que también dispara aviso (0.05 = 5%). |
-| `realerta_si_baja` | Cuánto más tiene que bajar para volver a avisar (0.02 = 2%). |
 
-El bot se apaga solo el día antes de la última salida posible.
+El bot se apaga solo el día antes de la última salida posible (23 dic). Después hay que borrar el
+despertador en [claude.ai/code/routines](https://claude.ai/code/routines), que sigue sonando aunque ya no haya nada que revisar.
 
 ## Secretos de GitHub
 
