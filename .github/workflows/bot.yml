@@ -7,9 +7,12 @@ on:
     # "¿Toca revisar?" solo deja seguir si ya pasaron más de 2h40 desde la última revisión (así sale
     # una cada 3 horas). Si GitHub se salta una, la siguiente la recupera.
     # Minutos 7 y 37 y no en punto: a las horas en punto GitHub está más saturado.
-    # El que de verdad lo despierta a tiempo es cron-job.org (6, 9, 12, 3, 6 y 9 en punto, con
-    # modo "auto"); este horario de GitHub queda de respaldo por si cron-job.org falla.
+    # El que de verdad lo despierta a tiempo es el push de abajo; este horario de GitHub queda de respaldo.
     - cron: "7,37 0-2,11-23 * * *"
+  push:
+    # Un despertador en la nube de Claude (rutina "Despertador bot vuelos") empuja un commit vacío a esta
+    # rama a las 6, 9, 12, 3, 6 y 9 en punto. Los push sí llegan al instante, a diferencia del horario.
+    branches: [claude/despertador]
   workflow_dispatch:
     inputs:
       modo:
@@ -29,6 +32,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: main  # siempre el código y el historial de main, aunque lo despierte un push a otra rama
 
       - name: ¿Toca revisar?
         id: toca
@@ -43,7 +48,7 @@ jobs:
           ahora = datetime.now()
           revisiones = json.load(open("estado.json")).get("revisiones", [])
           ultima = datetime.fromisoformat(revisiones[-1]["fecha"]) if revisiones else None
-          if os.environ["EVENTO"] != "schedule" and os.environ["MODO"] != "auto":
+          if os.environ["EVENTO"] == "workflow_dispatch" and os.environ["MODO"] != "auto":
               si = True  # corrida lanzada a mano
           else:
               si = 6 <= ahora.hour <= 21 and (ultima is None or ahora - ultima >= timedelta(hours=2, minutes=40))

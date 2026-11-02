@@ -8,8 +8,8 @@ que ningún computador esté prendido.
 
 ## Qué hace
 
-- Cada 3 horas, de 6am a 9pm hora de Colombia, busca en Google Flights. Lo despierta
-  [cron-job.org](#despertador-cron-joborg) a las 6, 9, 12, 3, 6 y 9 en punto. El horario propio de GitHub
+- Cada 3 horas, de 6am a 9pm hora de Colombia, busca en Google Flights. Lo despierta un
+  [despertador](#despertador) a las 6, 9, 12, 3, 6 y 9 en punto. El horario propio de GitHub
   (cada media hora, solo revisa si ya pasaron más de 2h40) queda de respaldo, porque GitHub se salta muchas corridas:
   - las **fechas ideales** (22 → 27 dic) y las cercanas (hasta 2 días antes o después, de 4 a 7 noches);
   - solo vuelos **directos**, sin Frontier, para **4 pasajeros**, con precios en **COP**.
@@ -66,21 +66,14 @@ En la pestaña **Actions → Bot vuelos BOG-MCO → Run workflow** se puede eleg
 - `normal`: lo mismo que la corrida programada;
 - `auto`: como el horario, solo revisa si ya pasaron más de 2h40 desde la última vez.
 
-## Despertador (cron-job.org)
+## Despertador
 
 El horario de GitHub (`schedule`) se salta muchas corridas: el 2/11 no hizo ninguna entre las 2am y las 3pm.
-Por eso un servicio externo y gratis, [cron-job.org](https://cron-job.org), lanza el workflow a las horas exactas.
-
-- **Llave:** un token *fine-grained* de GitHub que solo tiene acceso a este repositorio, con el permiso
-  **Actions: Read and write**. No puede leer ni cambiar el código.
-- **Tarea en cron-job.org:**
-  - `POST https://api.github.com/repos/andresnv22/vuelos-orlando-bot/actions/workflows/bot.yml/dispatches`
-  - Encabezados: `Authorization: Bearer <token>`, `Accept: application/vnd.github+json`,
-    `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`.
-  - Cuerpo: `{"ref":"main","inputs":{"modo":"auto"}}`.
-  - Horario: minuto 0, horas 6, 9, 12, 15, 18 y 21, zona horaria `America/Bogota`.
-- GitHub responde `204` cuando la acepta. Si el token se vence, la tarea empieza a fallar
-  con `401` y cron-job.org avisa por correo.
+Por eso una rutina en la nube de Claude, **Despertador bot vuelos**
+([claude.ai/code/routines](https://claude.ai/code/routines)), empuja un commit vacío a la rama
+`claude/despertador` a las 6, 9, 12, 3, 6 y 9 en punto. Ese push lanza el workflow al instante; el workflow
+siempre usa el código y el historial de `main`, y la regla de las 2h40 evita revisiones repetidas.
+El horario de GitHub queda de respaldo.
 
 ## Desarrollo
 
