@@ -1,7 +1,7 @@
 """Bot de precios: vuelos directos Bogotá (BOG) -> Orlando (MCO), diciembre 2026.
 
 Revisa en Google Flights varias combinaciones de fechas (mínimo 4 noches),
-solo vuelos directos, sin Frontier, precios en COP para 4 adultos.
+solo vuelos directos de Avianca y LATAM (sin Frontier), precios en COP para 4 adultos.
 Solo manda correo cuando el precio real en la aerolínea (ida y vuelta en una sola reserva,
 para todos) queda por debajo de UMBRAL_TOTAL, y lo repite en cada revisión mientras siga así.
 Avisa una vez cuando el precio vuelve a subir, y manda un resumen semanal (lunes) si no hubo
@@ -15,6 +15,7 @@ Uso:
 En GitHub Actions corre cada 3 horas (ver .github/workflows/bot.yml) y avisa por Gmail.
 """
 
+import base64
 import json
 import os
 import random
@@ -26,7 +27,6 @@ import time
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import quote
 
 from playwright.sync_api import sync_playwright
 
@@ -43,9 +43,12 @@ PASAJEROS = CONFIG["pasajeros"]  # el joven de 17 paga tarifa de adulto
 FECHAS_IDEALES = tuple(date.fromisoformat(f) for f in CONFIG["fechas_ideales"])
 FLEXIBILIDAD_DIAS = CONFIG["flexibilidad_dias"]  # días antes o después, en la ida y en la vuelta
 NOCHES_MIN, NOCHES_MAX = CONFIG["noches_min"], CONFIG["noches_max"]
-EXCLUIR = [a.lower() for a in CONFIG["excluir_aerolineas"]]
+# Solo se buscan estas aerolíneas (código IATA: nombre en Google). Sin Frontier: si entra en la búsqueda,
+# Google arma el "desde" de LATAM o Avianca con la vuelta en Frontier, que son tiquetes separados.
+AEROLINEAS = CONFIG["aerolineas"]
 UMBRAL_TOTAL = CONFIG["umbral_total_cop"]  # COP ida y vuelta para todos: avisa si el precio queda por debajo
 MAX_VERIFICAR = 8  # cuántas fechas como máximo se revisan en la página de la aerolínea por corrida
+MARGEN_DESDE = 1.05  # el "desde" a veces sale un poco más alto que el real: también se revisan esas fechas
 # ------------------------------------------------
 
 # Primero tus fechas, después las cercanas.
@@ -80,12 +83,35 @@ RESERVAR = {
 SEL_VUELO = '[aria-label*="round trip total"]'
 
 
+def _campo(numero, valor):
+    """Un campo del parámetro tfs de Google Flights (formato protobuf)."""
+    def varint(n):
+        out = b""
+        while n > 0x7F:
+            out += bytes([n & 0x7F | 0x80])
+            n >>= 7
+        return out + bytes([n])
+    if isinstance(valor, int):
+        return varint(numero << 3) + varint(valor)
+    valor = valor.encode() if isinstance(valor, str) else valor
+    return varint(numero << 3 | 2) + varint(len(valor)) + valor
+
+
 def url_busqueda(salida, regreso):
-    q = (
-        f"Nonstop flights to MCO from BOG on {salida.isoformat()} "
-        f"through {regreso.isoformat()} for {PASAJEROS} adults"
-    )
-    return f"https://www.google.com/travel/flights?q={quote(q)}&curr=COP&hl=en&gl=CO"
+    """Búsqueda de Google Flights de ida y vuelta, solo directos y solo AEROLINEAS, para PASAJEROS adultos.
+    Es la misma que abre el link del correo, así ves exactamente lo que vio el bot."""
+    def tramo(fecha, desde, hasta):
+        return _campo(3, _campo(2, fecha.isoformat()) + _campo(5, 0)  # 5 = máximo de escalas
+                      + b"".join(_campo(6, a) for a in AEROLINEAS)
+                      + _campo(13, _campo(1, 1) + _campo(2, desde)) + _campo(14, _campo(1, 1) + _campo(2, hasta)))
+    datos = (_campo(1, 28) + _campo(2, 2) + tramo(salida, "BOG", "MCO") + tramo(regreso, "MCO", "BOG")
+             + _campo(8, 1) * PASAJEROS + _campo(9, 1) + _campo(19, 1))  # adultos, clase turista, ida y vuelta
+    tfs = base64.urlsafe_b64encode(datos).decode().rstrip("=")
+    return f"https://www.google.com/travel/flights/search?tfs={tfs}&curr=COP&hl=en&gl=CO"
+
+
+def en_espanol(url):
+    return url.replace("hl=en", "hl=es")
 
 
 def cop(n):
@@ -131,8 +157,7 @@ def buscar(page, salida, regreso):
         if not m:
             continue
         aerolinea = m.group("aerolinea")
-        opera = m.group("opera") or ""
-        if any(x in (aerolinea + opera).lower() for x in EXCLUIR):
+        if aerolinea not in AEROLINEAS.values():  # por si Google no aplica el filtro de aerolíneas
             continue
         clave = (aerolinea, m.group("hora"))
         if clave in vistos:
@@ -181,13 +206,13 @@ def opciones_para_reservar(vuelos):
 
 def verificar_precios(page, vuelos):
     """Revisa en la página de la aerolínea el vuelo más barato de cada fecha que en la búsqueda sale
-    bajo el tope (tus fechas primero), hasta encontrar uno que de verdad lo esté. El precio "desde"
+    bajo el tope o cerca (tus fechas primero), hasta encontrar uno que de verdad lo esté. El precio "desde"
     de Google no predice bien el real, así que no basta con mirar solo las 2 o 3 más baratas."""
     por_fecha = {}
     for v in vuelos:
         por_fecha.setdefault((v["salida"], v["regreso"]), v)
     candidatos = sorted(por_fecha.values(), key=lambda v: (not es_ideal(v), v["total"]))
-    for v in [v for v in candidatos if motivo_umbral(v["total"])][:MAX_VERIFICAR]:
+    for v in [v for v in candidatos if vale_revisar(v["total"])][:MAX_VERIFICAR]:
         completar_reserva(page, v)
         real = (cop(v["precio_real"]) if v.get("precio_real")
                 else "solo tiquetes separados (no cuenta)" if v.get("solo_separados") else "no se pudo leer")
@@ -219,7 +244,10 @@ def completar_reserva(page, v):
 def precio_ida_vuelta(texto, aerolinea):
     """Del texto de la página de reserva de Google, el precio de la reserva de ida y vuelta JUNTA
     con la aerolínea ("Book with Avianca · COP ..."). Las opciones de "Separate tickets" (dos
-    tiquetes por aparte) no cuentan. Devuelve (precio o None, si solo había tiquetes separados)."""
+    tiquetes por aparte) y las de otras aerolíneas (p. ej. Delta, que vende vuelos de LATAM en dólares)
+    no cuentan. Devuelve (precio o None, si solo había tiquetes separados)."""
+    if f"for {PASAJEROS} adults" not in texto:  # el precio tiene que ser para todos, no para uno
+        return None, False
     separados = False
     for opcion in texto.split("Book with ")[1:]:
         bloque = opcion[:300]
@@ -255,7 +283,7 @@ def link_reserva_google(page, v):
             return None
         page.locator(SEL_VUELO).nth(min(regresos)[1]).evaluate("e => e.click()")
         page.wait_for_url("**/travel/flights/booking**", timeout=30000)
-        return page.url.replace("hl=en", "hl=es")
+        return en_espanol(page.url)
     except Exception as e:
         print(f"  no se pudo sacar link de reserva ({v['aerolinea']}): {type(e).__name__}")
         return None
@@ -268,11 +296,16 @@ def motivo_umbral(total):
     return None
 
 
+def vale_revisar(desde):
+    """Si con este precio "desde" vale la pena abrir la página de reserva para ver el real."""
+    return desde < UMBRAL_TOTAL * MARGEN_DESDE
+
+
 def detalle(vuelos, estado):
     vuelos = sorted(vuelos, key=lambda v: v["total"])
     mejor = vuelos[0]
     lineas = [
-        "Vuelos DIRECTOS Bogotá → Orlando · 4 adultos · ida y vuelta · sin Frontier",
+        f"Vuelos DIRECTOS Bogotá → Orlando · {PASAJEROS} adultos · ida y vuelta · solo {' y '.join(AEROLINEAS.values())}",
         f"Revisado: {datetime.now():%d/%m/%Y %H:%M}",
         "",
         f"MEJOR PRECIO: {cop(mejor['total'])} COP en total "
@@ -309,9 +342,9 @@ def detalle(vuelos, estado):
             )
         if v.get("reserva"):
             lineas.append(f"   Ida y vuelta ya elegidas → botón \"Reservar con {v['aerolinea']}\" "
-                          f"(no \"Billetes separados\"): {v['reserva']}")
-        else:
-            lineas.append(f"   Ver en Google Flights: {v['url']}")
+                          f"(no Delta ni \"Billetes separados\"): {v['reserva']}")
+        lineas.append(f"   La búsqueda que hizo el bot (solo directos de {' y '.join(AEROLINEAS.values())}): "
+                      f"{en_espanol(v['url'])}")
         if "latam" in v["aerolinea"].lower():
             lineas.append(f"   Buscar en latam.com (fechas y 4 pasajeros ya puestos): {link_latam(v)}")
         elif "avianca" in v["aerolinea"].lower():
@@ -399,16 +432,24 @@ def texto_recordatorio(vuelos, motivo=None):
             f"   {cop(precio)} ida y vuelta para los {PASAJEROS} ({etiqueta}) · {cop(precio // PASAJEROS)} c/u",
             *([f"   Ida y vuelta en una sola reserva con {v['aerolinea']} (no son tiquetes separados)"]
               if v.get("precio_real") else []),
-            f"   Reservar: {v.get('reserva') or v['url']}",
+            f"   Reservar: {v.get('reserva') or en_espanol(v['url'])}",
             "",
         ]
     lineas += [
         f"Tu tope: menos de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS}.",
-        "Abre el link y elige \"Reservar con Avianca/LATAM\" (no \"Billetes separados\") para comprar",
-        "la ida y la vuelta juntas en la web oficial.",
+        AYUDA_RESERVA,
         "Precios con impuestos; maletas facturadas aparte.",
     ]
     return "\n".join(lineas)
+
+
+AYUDA_RESERVA = (
+    "El link abre Google Flights con la ida y la vuelta ya elegidas. El precio de este correo es el de la línea "
+    "\"Reservar con LATAM\" (o Avianca) · Compañía aérea: ida y vuelta en una sola compra en la web oficial. "
+    "Si arriba sale un \"precio total más bajo\" distinto, es de otra aerolínea (Delta vende los mismos vuelos "
+    "de LATAM y cobra en dólares) o de \"Billetes separados\" (dos compras por aparte): el bot no los cuenta. "
+    f"Tampoco Frontier: el bot solo busca vuelos directos de {' y '.join(AEROLINEAS.values())}."
+)
 
 
 def grafica_png(estado):
@@ -461,7 +502,9 @@ def html_correo(intro, vuelos, con_grafica):
           <div style="color:#555;font-size:13px;margin:2px 0 8px">{fecha_corta(v['salida'])} → {fecha_corta(v['regreso'])} · {v['noches']} noches · sale {escape(v['hora'])}</div>
           <div style="font-size:20px;font-weight:bold">{cop(precio)} <span style="font-size:12px;font-weight:normal;color:#555">ida y vuelta para los {PASAJEROS}</span></div>
           <div style="color:#555;font-size:12px;margin-bottom:10px">{cop(precio // PASAJEROS)} por persona · {etiqueta}</div>
-          <a href="{escape(v.get('reserva') or v['url'])}" style="display:inline-block;background:#1a73e8;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:bold">Reservar en {escape(v['aerolinea'])}</a>
+          <a href="{escape(v.get('reserva') or en_espanol(v['url']))}" style="display:inline-block;background:#1a73e8;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:bold">Reservar en {escape(v['aerolinea'])}</a>
+          {f'<div style="color:#555;font-size:12px;margin-top:8px">En la página es la línea <b>"Reservar con {escape(v["aerolinea"])} · Compañía aérea"</b>, no la de otra aerolínea ni la de "Billetes separados".</div>' if v.get("precio_real") else ""}
+          <div style="font-size:12px;margin-top:6px"><a href="{escape(en_espanol(v['url']))}" style="color:#1a73e8">Ver la búsqueda que hizo el bot</a> <span style="color:#555">(solo directos de {' y '.join(AEROLINEAS.values())})</span></div>
         </div>"""
     por_combo = {}
     for v in sorted(vuelos, key=lambda v: v["total"]):
@@ -481,9 +524,7 @@ def html_correo(intro, vuelos, con_grafica):
   <div style="color:#555;font-size:13px">{PASAJEROS} pasajeros · ida y vuelta · revisado {datetime.now():%d/%m/%Y %H:%M}</div>
   <p style="font-size:15px;line-height:1.5">{escape(intro).replace(chr(10), '<br>')}</p>
   {filas}
-  <p style="font-size:12px;color:#555">El botón abre Google Flights con la ida y la vuelta ya elegidas. Ahí
-     dale a <b>"Reservar con Avianca/LATAM"</b> (no a "Billetes separados") para comprar las dos juntas en la
-     web oficial de la aerolínea.</p>
+  <p style="font-size:12px;color:#555">{escape(AYUDA_RESERVA)}</p>
   {grafica}
   <h3 style="margin:24px 0 8px">Mejor precio "desde" por fechas</h3>
   <table style="border-collapse:collapse;font-size:13px">{combos}</table>
@@ -624,9 +665,9 @@ def main():
             resumen = forzar_resumen or (
                 ahora.weekday() == 0 and ahora.hour >= 8 and estado["ultimo_resumen"] != hoy
             )
-            # Filtro rápido con el precio "desde" (casi siempre igual o menor que el real):
-            # si ni así queda bajo el tope, no hace falta abrir las páginas de reserva.
-            hay_candidatos = bool(motivo_umbral(mejor["total"]))
+            # Filtro rápido con el precio "desde" (parecido al real): si ni siquiera queda cerca
+            # del tope, no hace falta abrir las páginas de reserva.
+            hay_candidatos = vale_revisar(mejor["total"])
             if hay_candidatos:
                 verificar_precios(page, vuelos)
             if hay_candidatos or resumen:
