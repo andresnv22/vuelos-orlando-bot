@@ -76,7 +76,20 @@ Por eso una rutina en la nube de Claude, **Despertador bot vuelos**
 ([claude.ai/code/routines](https://claude.ai/code/routines)), empuja un commit vacío a la rama
 `claude/despertador` a las 6, 9, 12, 3, 6 y 9 en punto. Ese push lanza el workflow al instante; el workflow
 siempre usa el código y el historial de `main`, y la regla de las 2h40 evita revisiones repetidas.
-El horario de GitHub queda de respaldo.
+
+La rutina gasta del uso de la cuenta de Claude: si ese uso está agotado a la hora en punto, no suena
+(pasó el 2/11 a las 6pm). Por eso hay un segundo despertador en el Mac,
+[`mac/com.vuelos-orlando.despertador.plist`](mac/com.vuelos-orlando.despertador.plist), que 10 minutos
+después (6:10, 9:10…) lanza el workflow en modo `auto`: si la rutina ya lo despertó, no hace nada. Funciona con
+el Mac prendido o dormido (si estaba dormido, corre al despertar). Se instala y se quita así:
+
+```bash
+cp mac/com.vuelos-orlando.despertador.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vuelos-orlando.despertador.plist
+launchctl bootout gui/$(id -u)/com.vuelos-orlando.despertador   # para quitarlo
+```
+
+El horario de GitHub queda de respaldo, aunque casi no sirve: el 2/11 corrió 2 de unas 32 veces.
 
 ## Desarrollo
 

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Despertador de respaldo en el Mac: le pide a GitHub que revise (modo auto, respeta la regla de las 2h40)
+     a las 6:10, 9:10, 12:10, 3:10, 6:10 y 9:10. Si el Mac estaba dormido, corre al despertar. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vuelos-orlando.despertador</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/gh</string>
+    <string>workflow</string>
+    <string>run</string>
+    <string>bot.yml</string>
+    <string>--repo</string>
+    <string>andresnv22/vuelos-orlando-bot</string>
+    <string>--ref</string>
+    <string>main</string>
+    <string>-f</string>
+    <string>modo=auto</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>10</integer></dict>
+  </array>
+  <key>StandardOutPath</key>
+  <string>/tmp/despertador-vuelos.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/despertador-vuelos.log</string>
+</dict>
+</plist>
