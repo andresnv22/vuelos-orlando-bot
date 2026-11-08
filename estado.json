@@ -127,9 +127,13 @@
     {
       "fecha": "2026-11-07T21:01",
       "mejor": 9927840
+    },
+    {
+      "fecha": "2026-11-08T06:02",
+      "mejor": 10267280
     }
   ],
-  "bajo_tope": true,
+  "bajo_tope": false,
   "ultimo_resumen": "2026-11-02",
   "ultimo_aviso_error": "2026-11-07",
   "ultimo_aviso_mail": null
