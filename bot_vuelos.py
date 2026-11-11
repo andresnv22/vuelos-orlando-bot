@@ -4,8 +4,8 @@ Revisa en Google Flights varias combinaciones de fechas (mínimo 4 noches),
 solo vuelos directos de Avianca y LATAM (sin Frontier), precios en COP para 4 adultos.
 Solo manda correo cuando el precio real en la aerolínea (ida y vuelta en una sola reserva,
 para todos) queda por debajo de UMBRAL_TOTAL, y lo repite en cada revisión mientras siga así.
-Avisa una vez cuando el precio vuelve a subir, y manda un resumen semanal (lunes) si no hubo
-otros avisos, para que sepas que sigue vivo.
+Avisa una vez cuando el precio vuelve a subir, y manda un resumen diario (6pm) si ese día no hubo
+otros avisos, para que sepas que sigue vivo aunque el precio esté sobre el tope.
 
 Uso:
     python3 bot_vuelos.py              # revisa y avisa si hay algo bueno
@@ -34,6 +34,7 @@ from playwright.sync_api import sync_playwright
 # "recordatorios" (suena en el iPhone vía iCloud, solo desde el Mac), "gmail" (desde la nube) o "correo" (app Mail)
 AVISAR_POR = os.environ.get("AVISAR_POR", "recordatorios")
 EN_LA_NUBE = os.environ.get("GITHUB_ACTIONS") == "true"
+CAPTURAS = os.environ.get("CAPTURAS")  # carpeta donde guardar lo que se veía cuando algo falla (GitHub la sube)
 LISTA_RECORDATORIOS = "Vuelos Orlando"
 EMAIL_TO = "andresxnz@outlook.com"
 
@@ -126,6 +127,30 @@ def fecha_corta(iso):
     return f"{d.day} {MESES[d.month - 1]}"
 
 
+OOPS = "Oops, something went wrong"  # error que Google muestra a veces en vez de los resultados
+
+
+class ErrorDeGoogle(Exception):
+    """Google respondió "Oops, something went wrong" en vez de los resultados."""
+
+
+def hay_visible(page, locator):
+    return locator.filter(visible=True).count() > 0
+
+
+def esperar_resultados(page, selector):
+    """Espera hasta 30 s a que aparezca `selector`. Si Google responde "Oops, something went wrong", falla de una
+    vez: Google lo hace cuando en la misma sesión se abre la misma búsqueda más de dos veces, y recargar cuenta
+    como otra vez. Lo que sirve es volver a intentar en una sesión nueva (ver sesion_nueva)."""
+    for _ in range(60):
+        if hay_visible(page, page.locator(selector)):
+            return
+        if hay_visible(page, page.get_by_text(OOPS)):
+            raise ErrorDeGoogle(OOPS)
+        page.wait_for_timeout(500)
+    raise TimeoutError(f"no aparecieron resultados ({selector})")
+
+
 def buscar(page, salida, regreso):
     """Devuelve (vuelos, insight_google, bloqueado)."""
     for intento in range(3):  # Google a veces tarda, sobre todo al despertar el Mac
@@ -140,7 +165,7 @@ def buscar(page, salida, regreso):
     if "/sorry/" in page.url or "unusual traffic" in page.content().lower():
         return [], None, True
     try:
-        page.wait_for_selector('[aria-label*="round trip total"]', timeout=30000)
+        esperar_resultados(page, SEL_VUELO)
     except Exception:
         return [], None, False
     page.wait_for_timeout(2500)  # dejar que termine de cargar la lista
@@ -223,22 +248,38 @@ def verificar_precios(page, vuelos):
 
 def completar_reserva(page, v):
     """Pone en v el link de la página de reserva de Google (botón "Reservar con
-    <aerolínea>" que lleva a su web oficial) y el precio real que da la aerolínea ahí."""
-    for _ in range(2):  # a veces Google no reacciona al clic; un segundo intento casi siempre funciona
-        v["reserva"] = link_reserva_google(page, v)
-        if v["reserva"]:
-            break
-    v["precio_real"] = None
-    v["solo_separados"] = False
-    if not v["reserva"]:
-        return
+    <aerolínea>" que lleva a su web oficial) y el precio real que da la aerolínea ahí.
+    Cada intento va en una sesión nueva: en la de la búsqueda, esa misma búsqueda ya se abrió."""
+    v.update(reserva=None, precio_real=None, solo_separados=False)
+    for intento in range(3):  # Google a veces responde "Oops" aun en sesión nueva; al reintentar casi siempre sale
+        if intento:
+            page.wait_for_timeout(3000 * intento)
+        pagina = sesion_nueva(page.context.browser)
+        try:
+            reserva = link_reserva_google(pagina, v)
+            if reserva:
+                v["reserva"] = reserva
+                v["precio_real"], v["solo_separados"] = leer_precio(pagina, v)
+        finally:
+            pagina.context.close()
+        if v["precio_real"] or v["solo_separados"]:
+            return
+
+
+def leer_precio(page, v):
+    """(precio real, si solo había tiquetes separados) de la página de reserva ya abierta."""
+    separados = False
     for _ in range(12):  # los precios de la aerolínea tardan unos segundos en cargar
         precio, separados = precio_ida_vuelta(page.inner_text("body"), v["aerolinea"])
         if precio:
-            v["precio_real"] = precio
-            return
+            return precio, False
+        if hay_visible(page, page.get_by_text(OOPS)):  # no va a cargar: mejor reintentar en otra sesión
+            print(f'  la página de reserva respondió "{OOPS}"')
+            break
         page.wait_for_timeout(2500)
-    v["solo_separados"] = separados
+    if not separados:
+        capturar(page, f"{v['salida']}_{v['aerolinea']}_precio")
+    return None, separados
 
 
 def precio_ida_vuelta(texto, aerolinea):
@@ -263,14 +304,17 @@ def precio_ida_vuelta(texto, aerolinea):
 
 def link_reserva_google(page, v):
     """Elige ida y vuelta en Google Flights y devuelve el link de la página de reserva."""
+    paso = "abrir la búsqueda"
     try:
         page.goto(v["url"], wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_selector(SEL_VUELO, timeout=30000)
+        esperar_resultados(page, SEL_VUELO)
         page.wait_for_timeout(2500)
+        paso = "elegir la ida"
         page.locator(
             f'{SEL_VUELO}[aria-label*="Nonstop flight with {v["aerolinea"]}"][aria-label*="at {v["hora"]}"]'
-        ).first.evaluate("e => e.click()")  # el clic normal lo tapa otro elemento
-        page.wait_for_selector(f'{SEL_VUELO}[aria-label*="Leaves Orlando"]', timeout=30000)
+        ).first.evaluate("e => e.click()", timeout=30000)  # el clic normal lo tapa otro elemento
+        paso = "cargar las vueltas"
+        esperar_resultados(page, f'{SEL_VUELO}[aria-label*="Leaves Orlando"]')
         page.wait_for_timeout(2500)
         etiquetas = page.eval_on_selector_all(SEL_VUELO, "els => els.map(e => e.getAttribute('aria-label'))")
         regresos = [
@@ -281,12 +325,29 @@ def link_reserva_google(page, v):
         ]
         if not regresos:
             return None
+        paso = "abrir la página de reserva"
         page.locator(SEL_VUELO).nth(min(regresos)[1]).evaluate("e => e.click()")
         page.wait_for_url("**/travel/flights/booking**", timeout=30000)
         return en_espanol(page.url)
     except Exception as e:
-        print(f"  no se pudo sacar link de reserva ({v['aerolinea']}): {type(e).__name__}")
+        bloqueo = " (Google pidió verificación)" if "/sorry/" in page.url else ""
+        print(f"  no se pudo sacar link de reserva ({v['aerolinea']}) al {paso}{bloqueo}: {type(e).__name__}")
+        capturar(page, f"{v['salida']}_{v['aerolinea']}_{paso}")
         return None
+
+
+def capturar(page, nombre):
+    """Guarda en CAPTURAS una imagen y el texto de la página, para ver después qué mostraba Google."""
+    if not CAPTURAS:
+        return
+    try:
+        carpeta = Path(CAPTURAS)
+        carpeta.mkdir(exist_ok=True)
+        base = carpeta / re.sub(r"[^\w-]+", "-", f"{datetime.now():%H%M%S}_{nombre}")
+        page.screenshot(path=f"{base}.png", full_page=True, timeout=15000)
+        Path(f"{base}.txt").write_text(f"{page.url}\n{page.title()}\n\n{page.inner_text('body', timeout=5000)[:8000]}")
+    except Exception as e:
+        print(f"  no se pudo guardar la captura: {type(e).__name__}")
 
 
 def motivo_umbral(total):
@@ -581,7 +642,12 @@ def avisar(asunto, cuerpo_correo, texto_corto, html=None, png=None):
 def abrir_navegador(p):
     # En la nube se usa el Chromium que instala Playwright; en el Mac, tu Google Chrome.
     browser = p.chromium.launch(channel="chromium" if EN_LA_NUBE else "chrome", headless=True)
-    return browser, browser.new_page(locale="en-US", timezone_id="America/Bogota")
+    return browser, sesion_nueva(browser)
+
+
+def sesion_nueva(browser):
+    """Una página en una sesión nueva del navegador (sin cookies ni historial de búsquedas)."""
+    return browser.new_page(locale="en-US", timezone_id="America/Bogota")
 
 
 def notificar_mac(titulo, mensaje):
@@ -645,7 +711,9 @@ def main():
                 continue
             try:
                 encontrados, _, bloqueado = buscar(page, salida, regreso)
-                if not encontrados and not bloqueado:  # a veces la lista no alcanza a cargar
+                if not encontrados and not bloqueado:  # a veces no carga; se reintenta en una sesión nueva
+                    page.context.close()
+                    page = sesion_nueva(browser)
                     encontrados, _, bloqueado = buscar(page, salida, regreso)
             except Exception as e:  # una fecha que falla no tumba toda la revisión
                 print(f"{salida} → {regreso}: error {type(e).__name__}")
@@ -663,7 +731,7 @@ def main():
             vuelos.sort(key=lambda v: v["total"])
             mejor = vuelos[0]
             resumen = forzar_resumen or (
-                ahora.weekday() == 0 and ahora.hour >= 8 and estado["ultimo_resumen"] != hoy
+                ahora.hour >= 18 and estado["ultimo_resumen"] != hoy  # uno al día, desde la revisión de las 6pm
             )
             # Filtro rápido con el precio "desde" (parecido al real): si ni siquiera queda cerca
             # del tope, no hace falta abrir las páginas de reserva.
@@ -744,11 +812,12 @@ def main():
         # precio que valga la pena") sobra y se manda en otra revisión sin avisos.
         if resumen and (forzar_resumen or not avisos):
             intro = (
-                "Resumen semanal: todavía no hay un precio que valga la pena, sigo vigilando.\n"
+                "Resumen del día: el bot sigue revisando cada 3 horas, pero todavía no hay un precio real "
+                f"bajo tu tope.\n"
                 f"Te aviso apenas el precio real baje de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS}.\n\n"
             )
             avisos.append((
-                f"✈️ Resumen semanal BOG→MCO: desde {cop(mejor['total'])} COP",
+                f"✈️ Resumen del día BOG→MCO: lo más barato desde {cop(mejor['total'])} COP",
                 intro + cuerpo,
                 intro + texto_recordatorio(vuelos),
                 {"ultimo_resumen": hoy},

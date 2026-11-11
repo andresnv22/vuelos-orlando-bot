@@ -29,7 +29,7 @@ que ningún computador esté prendido.
 |---|---|
 | 🔥 **¡Precio bueno!** | El precio real en la aerolínea, ida y vuelta en una sola reserva para los 4, queda por debajo del tope (menos de $10.000.000). Llega en cada revisión (cada 3 horas) mientras siga así. El precio "desde" de la búsqueda nunca basta. |
 | ⬆️ **Subió el precio** | Una sola vez, cuando venía avisando y el precio real ya no está bajo el tope. Después no llega nada hasta que vuelva a bajar. |
-| ✈️ **Resumen semanal** | Los lunes, si ese día no salió otro aviso, para saber que el bot sigue vivo. |
+| ✈️ **Resumen del día** | A las 6pm, si ese día no salió otro aviso: el precio más barato del día, para saber que el bot sigue vivo aunque el precio esté sobre el tope. |
 | ⚠️ **No se pudo revisar** / **no pude confirmar el precio real** | Google no devolvió resultados, o la página de la aerolínea no mostró el precio de una opción que en la búsqueda sale bajo el tope (máximo uno al día). |
 
 Si un correo no se puede enviar, la corrida queda en rojo y GitHub avisa por correo a la cuenta del repositorio.
@@ -67,7 +67,11 @@ En la pestaña **Actions → Bot vuelos BOG-MCO → Run workflow** se puede eleg
 - `prueba`: revisa 2 fechas y manda un correo de prueba con precios y links reales;
 - `resumen`: hace la revisión completa y manda el resumen;
 - `normal`: lo mismo que la corrida programada;
-- `auto`: como el horario, solo revisa si ya pasaron más de 2h40 desde la última vez.
+- `auto`: como el horario, solo revisa si ya pasaron más de 2h40 desde la última vez;
+- `diagnostico`: abre la página de reserva de cada fecha y mide cuánto tarda (`diagnostico.py`), sin correo ni historial.
+
+Cuando no sale un link de reserva, la corrida guarda lo que mostraba Google en el artefacto **capturas**
+(se descarga desde la corrida en la pestaña Actions; dura 7 días).
 
 ## Despertador
 
@@ -103,6 +107,7 @@ python bot_vuelos.py --dry-run             # revisión real sin enviar nada
 Archivos:
 
 - `bot_vuelos.py`: el bot.
+- `diagnostico.py`: revisa si las páginas de reserva cargan (modo `diagnostico`).
 - `config.json`: fechas, pasajeros y umbral.
 - `estado.json`: historial de precios; lo actualiza el bot en cada revisión.
 - `tests/`: pruebas automáticas; GitHub las corre en cada cambio.
