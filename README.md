@@ -68,7 +68,7 @@ En la pestaña **Actions → Bot vuelos BOG-MCO → Run workflow** se puede eleg
 - `resumen`: hace la revisión completa y manda el resumen;
 - `normal`: lo mismo que la corrida programada;
 - `auto`: como el horario, solo revisa si ya pasaron más de 2h40 desde la última vez;
-- `diagnostico`: revisa y abre las páginas de reserva sin mandar correo ni guardar historial.
+- `diagnostico`: abre la página de reserva de cada fecha y mide cuánto tarda (`diagnostico.py`), sin correo ni historial.
 
 Cuando no sale un link de reserva, la corrida guarda lo que mostraba Google en el artefacto **capturas**
 (se descarga desde la corrida en la pestaña Actions; dura 7 días).
@@ -107,6 +107,7 @@ python bot_vuelos.py --dry-run             # revisión real sin enviar nada
 Archivos:
 
 - `bot_vuelos.py`: el bot.
+- `diagnostico.py`: revisa si las páginas de reserva cargan (modo `diagnostico`).
 - `config.json`: fechas, pasajeros y umbral.
 - `estado.json`: historial de precios; lo actualiza el bot en cada revisión.
 - `tests/`: pruebas automáticas; GitHub las corre en cada cambio.

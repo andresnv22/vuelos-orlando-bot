@@ -89,7 +89,7 @@ jobs:
           case "$MODO" in
             resumen) python bot_vuelos.py --resumen ;;
             prueba) python bot_vuelos.py --probar-aviso ;;
-            diagnostico) python bot_vuelos.py --dry-run --resumen ;;  # revisa y abre las reservas, sin correo
+            diagnostico) python diagnostico.py ;;  # abre la reserva de cada fecha, sin correo ni historial
             *) python bot_vuelos.py ;;
           esac
 
