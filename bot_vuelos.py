@@ -4,8 +4,8 @@ Revisa en Google Flights varias combinaciones de fechas (mínimo 4 noches),
 solo vuelos directos de Avianca y LATAM (sin Frontier), precios en COP para 4 adultos.
 Solo manda correo cuando el precio real en la aerolínea (ida y vuelta en una sola reserva,
 para todos) queda por debajo de UMBRAL_TOTAL, y lo repite en cada revisión mientras siga así.
-Avisa una vez cuando el precio vuelve a subir, y manda un resumen semanal (lunes) si no hubo
-otros avisos, para que sepas que sigue vivo.
+Avisa una vez cuando el precio vuelve a subir, y manda un resumen diario (6pm) si ese día no hubo
+otros avisos, para que sepas que sigue vivo aunque el precio esté sobre el tope.
 
 Uso:
     python3 bot_vuelos.py              # revisa y avisa si hay algo bueno
@@ -263,13 +263,16 @@ def precio_ida_vuelta(texto, aerolinea):
 
 def link_reserva_google(page, v):
     """Elige ida y vuelta en Google Flights y devuelve el link de la página de reserva."""
+    paso = "abrir la búsqueda"
     try:
         page.goto(v["url"], wait_until="domcontentloaded", timeout=60000)
         page.wait_for_selector(SEL_VUELO, timeout=30000)
         page.wait_for_timeout(2500)
+        paso = "elegir la ida"
         page.locator(
             f'{SEL_VUELO}[aria-label*="Nonstop flight with {v["aerolinea"]}"][aria-label*="at {v["hora"]}"]'
-        ).first.evaluate("e => e.click()")  # el clic normal lo tapa otro elemento
+        ).first.evaluate("e => e.click()", timeout=30000)  # el clic normal lo tapa otro elemento
+        paso = "cargar las vueltas"
         page.wait_for_selector(f'{SEL_VUELO}[aria-label*="Leaves Orlando"]', timeout=30000)
         page.wait_for_timeout(2500)
         etiquetas = page.eval_on_selector_all(SEL_VUELO, "els => els.map(e => e.getAttribute('aria-label'))")
@@ -281,11 +284,13 @@ def link_reserva_google(page, v):
         ]
         if not regresos:
             return None
+        paso = "abrir la página de reserva"
         page.locator(SEL_VUELO).nth(min(regresos)[1]).evaluate("e => e.click()")
         page.wait_for_url("**/travel/flights/booking**", timeout=30000)
         return en_espanol(page.url)
     except Exception as e:
-        print(f"  no se pudo sacar link de reserva ({v['aerolinea']}): {type(e).__name__}")
+        bloqueo = " (Google pidió verificación)" if "/sorry/" in page.url else ""
+        print(f"  no se pudo sacar link de reserva ({v['aerolinea']}) al {paso}{bloqueo}: {type(e).__name__}")
         return None
 
 
@@ -663,7 +668,7 @@ def main():
             vuelos.sort(key=lambda v: v["total"])
             mejor = vuelos[0]
             resumen = forzar_resumen or (
-                ahora.weekday() == 0 and ahora.hour >= 8 and estado["ultimo_resumen"] != hoy
+                ahora.hour >= 18 and estado["ultimo_resumen"] != hoy  # uno al día, desde la revisión de las 6pm
             )
             # Filtro rápido con el precio "desde" (parecido al real): si ni siquiera queda cerca
             # del tope, no hace falta abrir las páginas de reserva.
@@ -744,11 +749,12 @@ def main():
         # precio que valga la pena") sobra y se manda en otra revisión sin avisos.
         if resumen and (forzar_resumen or not avisos):
             intro = (
-                "Resumen semanal: todavía no hay un precio que valga la pena, sigo vigilando.\n"
+                "Resumen del día: el bot sigue revisando cada 3 horas, pero todavía no hay un precio real "
+                f"bajo tu tope.\n"
                 f"Te aviso apenas el precio real baje de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS}.\n\n"
             )
             avisos.append((
-                f"✈️ Resumen semanal BOG→MCO: desde {cop(mejor['total'])} COP",
+                f"✈️ Resumen del día BOG→MCO: lo más barato desde {cop(mejor['total'])} COP",
                 intro + cuerpo,
                 intro + texto_recordatorio(vuelos),
                 {"ultimo_resumen": hoy},

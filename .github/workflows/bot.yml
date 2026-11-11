@@ -67,7 +67,13 @@ jobs:
         if: steps.toca.outputs.si == 'true'
         run: |
           pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
+          # A veces los servidores de paquetes de Ubuntu no responden (falló así el 11/11 a las 9am): se reintenta.
+          for intento in 1 2 3; do
+            python -m playwright install --with-deps chromium && exit 0
+            echo "La instalación falló (intento $intento); se reintenta en 30 segundos"
+            sleep 30
+          done
+          exit 1
 
       - name: Revisar precios
         if: steps.toca.outputs.si == 'true'

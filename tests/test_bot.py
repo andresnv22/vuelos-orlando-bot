@@ -38,7 +38,7 @@ class PruebaAlertas(unittest.TestCase):
                            ("sync_playwright", "abrir_navegador", "buscar", "completar_reserva", "avisar", "ESTADO",
                             "datetime")}
         # Reloj fijo para que el resultado no dependa del día en que se corren las pruebas:
-        # un martes no toca resumen semanal (los lunes sí).
+        # a las 10am no toca el resumen del día (sale desde la revisión de las 6pm).
         self.ahora = datetime(2026, 11, 3, 10, 0)
         prueba = self
 
@@ -173,8 +173,8 @@ class PruebaAlertas(unittest.TestCase):
         self.assertIn("¡Precio bueno!", avisos[0])
         self.assertIn(b.cop(reales["Avianca"]), avisos[0])
 
-    def test_el_lunes_no_manda_resumen_si_ya_sale_el_precio_bueno(self):
-        self.ahora = datetime(2026, 11, 2, 10, 0)  # lunes
+    def test_resumen_del_dia_solo_si_ese_dia_no_salio_otro_aviso(self):
+        self.ahora = datetime(2026, 11, 3, 18, 0)
         con_alerta = self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
         subio = self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))
         sin_avisos = self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))
@@ -183,7 +183,8 @@ class PruebaAlertas(unittest.TestCase):
         self.assertEqual(len(subio), 1)
         self.assertIn("Subió el precio", subio[0])
         self.assertEqual(len(sin_avisos), 1)
-        self.assertIn("Resumen semanal", sin_avisos[0])
+        self.assertIn("Resumen del día", sin_avisos[0])
+        self.assertEqual(self.revisar(self.umbral_total(1.3), self.umbral_total(1.4)), [])  # uno solo al día
 
     def test_reintenta_una_fecha_que_no_cargo(self):
         llamadas = []
