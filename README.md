@@ -67,7 +67,11 @@ En la pestaña **Actions → Bot vuelos BOG-MCO → Run workflow** se puede eleg
 - `prueba`: revisa 2 fechas y manda un correo de prueba con precios y links reales;
 - `resumen`: hace la revisión completa y manda el resumen;
 - `normal`: lo mismo que la corrida programada;
-- `auto`: como el horario, solo revisa si ya pasaron más de 2h40 desde la última vez.
+- `auto`: como el horario, solo revisa si ya pasaron más de 2h40 desde la última vez;
+- `diagnostico`: revisa y abre las páginas de reserva sin mandar correo ni guardar historial.
+
+Cuando no sale un link de reserva, la corrida guarda lo que mostraba Google en el artefacto **capturas**
+(se descarga desde la corrida en la pestaña Actions; dura 7 días).
 
 ## Despertador
 

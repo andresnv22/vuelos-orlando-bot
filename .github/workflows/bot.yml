@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       modo:
-        description: "normal, resumen, prueba o auto (como el horario: solo revisa si ya toca)"
+        description: "normal, resumen, prueba, diagnostico (sin correo) o auto (como el horario: solo revisa si ya toca)"
         default: normal
 
 permissions:
@@ -84,12 +84,23 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}  # opcional: a dónde llegan los avisos (si no, a GMAIL_USER)
           TZ: America/Bogota
           MODO: ${{ inputs.modo }}
+          CAPTURAS: capturas  # lo que mostraba Google cuando no salió un link de reserva
         run: |
           case "$MODO" in
             resumen) python bot_vuelos.py --resumen ;;
             prueba) python bot_vuelos.py --probar-aviso ;;
+            diagnostico) python bot_vuelos.py --dry-run --resumen ;;  # revisa y abre las reservas, sin correo
             *) python bot_vuelos.py ;;
           esac
+
+      - name: Subir capturas de lo que falló
+        if: always() && steps.toca.outputs.si == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: capturas
+          path: capturas/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Guardar historial de precios
         if: always() && steps.toca.outputs.si == 'true'

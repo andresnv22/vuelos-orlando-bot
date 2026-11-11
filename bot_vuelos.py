@@ -34,6 +34,7 @@ from playwright.sync_api import sync_playwright
 # "recordatorios" (suena en el iPhone vía iCloud, solo desde el Mac), "gmail" (desde la nube) o "correo" (app Mail)
 AVISAR_POR = os.environ.get("AVISAR_POR", "recordatorios")
 EN_LA_NUBE = os.environ.get("GITHUB_ACTIONS") == "true"
+CAPTURAS = os.environ.get("CAPTURAS")  # carpeta donde guardar lo que se veía cuando algo falla (GitHub la sube)
 LISTA_RECORDATORIOS = "Vuelos Orlando"
 EMAIL_TO = "andresxnz@outlook.com"
 
@@ -291,7 +292,22 @@ def link_reserva_google(page, v):
     except Exception as e:
         bloqueo = " (Google pidió verificación)" if "/sorry/" in page.url else ""
         print(f"  no se pudo sacar link de reserva ({v['aerolinea']}) al {paso}{bloqueo}: {type(e).__name__}")
+        capturar(page, f"{v['salida']}_{v['aerolinea']}_{paso}")
         return None
+
+
+def capturar(page, nombre):
+    """Guarda en CAPTURAS una imagen y el texto de la página, para ver después qué mostraba Google."""
+    if not CAPTURAS:
+        return
+    try:
+        carpeta = Path(CAPTURAS)
+        carpeta.mkdir(exist_ok=True)
+        base = carpeta / re.sub(r"[^\w-]+", "-", f"{datetime.now():%H%M%S}_{nombre}")
+        page.screenshot(path=f"{base}.png", full_page=True, timeout=15000)
+        Path(f"{base}.txt").write_text(f"{page.url}\n{page.title()}\n\n{page.inner_text('body', timeout=5000)[:8000]}")
+    except Exception as e:
+        print(f"  no se pudo guardar la captura: {type(e).__name__}")
 
 
 def motivo_umbral(total):
