@@ -17,6 +17,10 @@ with sync_playwright() as p:
         if salida <= date.today():
             continue
         vuelos, _, bloqueado = b.buscar(page, salida, regreso)
+        if not vuelos and not bloqueado:  # igual que el bot: se reintenta en una sesión nueva
+            page.context.close()
+            page = b.sesion_nueva(browser)
+            vuelos, _, bloqueado = b.buscar(page, salida, regreso)
         if bloqueado:
             print("Google pidió verificación (captcha) en la búsqueda; se para aquí.")
             break

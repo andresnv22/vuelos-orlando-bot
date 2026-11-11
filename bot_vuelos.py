@@ -127,6 +127,30 @@ def fecha_corta(iso):
     return f"{d.day} {MESES[d.month - 1]}"
 
 
+OOPS = "Oops, something went wrong"  # error que Google muestra a veces en vez de los resultados
+
+
+class ErrorDeGoogle(Exception):
+    """Google respondió "Oops, something went wrong" en vez de los resultados."""
+
+
+def hay_visible(page, locator):
+    return locator.filter(visible=True).count() > 0
+
+
+def esperar_resultados(page, selector):
+    """Espera hasta 30 s a que aparezca `selector`. Si Google responde "Oops, something went wrong", falla de una
+    vez: Google lo hace cuando en la misma sesión se abre la misma búsqueda más de dos veces, y recargar cuenta
+    como otra vez. Lo que sirve es volver a intentar en una sesión nueva (ver sesion_nueva)."""
+    for _ in range(60):
+        if hay_visible(page, page.locator(selector)):
+            return
+        if hay_visible(page, page.get_by_text(OOPS)):
+            raise ErrorDeGoogle(OOPS)
+        page.wait_for_timeout(500)
+    raise TimeoutError(f"no aparecieron resultados ({selector})")
+
+
 def buscar(page, salida, regreso):
     """Devuelve (vuelos, insight_google, bloqueado)."""
     for intento in range(3):  # Google a veces tarda, sobre todo al despertar el Mac
@@ -141,7 +165,7 @@ def buscar(page, salida, regreso):
     if "/sorry/" in page.url or "unusual traffic" in page.content().lower():
         return [], None, True
     try:
-        page.wait_for_selector('[aria-label*="round trip total"]', timeout=30000)
+        esperar_resultados(page, SEL_VUELO)
     except Exception:
         return [], None, False
     page.wait_for_timeout(2500)  # dejar que termine de cargar la lista
@@ -224,22 +248,38 @@ def verificar_precios(page, vuelos):
 
 def completar_reserva(page, v):
     """Pone en v el link de la página de reserva de Google (botón "Reservar con
-    <aerolínea>" que lleva a su web oficial) y el precio real que da la aerolínea ahí."""
-    for _ in range(2):  # a veces Google no reacciona al clic; un segundo intento casi siempre funciona
-        v["reserva"] = link_reserva_google(page, v)
-        if v["reserva"]:
-            break
-    v["precio_real"] = None
-    v["solo_separados"] = False
-    if not v["reserva"]:
-        return
+    <aerolínea>" que lleva a su web oficial) y el precio real que da la aerolínea ahí.
+    Cada intento va en una sesión nueva: en la de la búsqueda, esa misma búsqueda ya se abrió."""
+    v.update(reserva=None, precio_real=None, solo_separados=False)
+    for intento in range(3):  # Google a veces responde "Oops" aun en sesión nueva; al reintentar casi siempre sale
+        if intento:
+            page.wait_for_timeout(3000 * intento)
+        pagina = sesion_nueva(page.context.browser)
+        try:
+            reserva = link_reserva_google(pagina, v)
+            if reserva:
+                v["reserva"] = reserva
+                v["precio_real"], v["solo_separados"] = leer_precio(pagina, v)
+        finally:
+            pagina.context.close()
+        if v["precio_real"] or v["solo_separados"]:
+            return
+
+
+def leer_precio(page, v):
+    """(precio real, si solo había tiquetes separados) de la página de reserva ya abierta."""
+    separados = False
     for _ in range(12):  # los precios de la aerolínea tardan unos segundos en cargar
         precio, separados = precio_ida_vuelta(page.inner_text("body"), v["aerolinea"])
         if precio:
-            v["precio_real"] = precio
-            return
+            return precio, False
+        if hay_visible(page, page.get_by_text(OOPS)):  # no va a cargar: mejor reintentar en otra sesión
+            print(f'  la página de reserva respondió "{OOPS}"')
+            break
         page.wait_for_timeout(2500)
-    v["solo_separados"] = separados
+    if not separados:
+        capturar(page, f"{v['salida']}_{v['aerolinea']}_precio")
+    return None, separados
 
 
 def precio_ida_vuelta(texto, aerolinea):
@@ -267,14 +307,14 @@ def link_reserva_google(page, v):
     paso = "abrir la búsqueda"
     try:
         page.goto(v["url"], wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_selector(SEL_VUELO, timeout=30000)
+        esperar_resultados(page, SEL_VUELO)
         page.wait_for_timeout(2500)
         paso = "elegir la ida"
         page.locator(
             f'{SEL_VUELO}[aria-label*="Nonstop flight with {v["aerolinea"]}"][aria-label*="at {v["hora"]}"]'
         ).first.evaluate("e => e.click()", timeout=30000)  # el clic normal lo tapa otro elemento
         paso = "cargar las vueltas"
-        page.wait_for_selector(f'{SEL_VUELO}[aria-label*="Leaves Orlando"]', timeout=30000)
+        esperar_resultados(page, f'{SEL_VUELO}[aria-label*="Leaves Orlando"]')
         page.wait_for_timeout(2500)
         etiquetas = page.eval_on_selector_all(SEL_VUELO, "els => els.map(e => e.getAttribute('aria-label'))")
         regresos = [
@@ -602,7 +642,12 @@ def avisar(asunto, cuerpo_correo, texto_corto, html=None, png=None):
 def abrir_navegador(p):
     # En la nube se usa el Chromium que instala Playwright; en el Mac, tu Google Chrome.
     browser = p.chromium.launch(channel="chromium" if EN_LA_NUBE else "chrome", headless=True)
-    return browser, browser.new_page(locale="en-US", timezone_id="America/Bogota")
+    return browser, sesion_nueva(browser)
+
+
+def sesion_nueva(browser):
+    """Una página en una sesión nueva del navegador (sin cookies ni historial de búsquedas)."""
+    return browser.new_page(locale="en-US", timezone_id="America/Bogota")
 
 
 def notificar_mac(titulo, mensaje):
@@ -666,7 +711,9 @@ def main():
                 continue
             try:
                 encontrados, _, bloqueado = buscar(page, salida, regreso)
-                if not encontrados and not bloqueado:  # a veces la lista no alcanza a cargar
+                if not encontrados and not bloqueado:  # a veces no carga; se reintenta en una sesión nueva
+                    page.context.close()
+                    page = sesion_nueva(browser)
                     encontrados, _, bloqueado = buscar(page, salida, regreso)
             except Exception as e:  # una fecha que falla no tumba toda la revisión
                 print(f"{salida} → {regreso}: error {type(e).__name__}")

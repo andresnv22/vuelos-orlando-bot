@@ -16,7 +16,18 @@ import bot_vuelos as b  # noqa: E402
 
 
 class _Falso:
-    """Hace de navegador y de página: el bot solo les llama close() y wait_for_timeout()."""
+    """Hace de navegador, de sesión y de página: el bot les llama close(), wait_for_timeout() y new_page()."""
+
+    @property
+    def context(self):
+        return self
+
+    @property
+    def browser(self):
+        return self
+
+    def new_page(self, **k):
+        return type(self)()
 
     def close(self):
         pass
@@ -260,8 +271,11 @@ class PruebaBusqueda(unittest.TestCase):
             def content(self):
                 return ""
 
-            def wait_for_selector(self, *a, **k):
-                pass
+            def locator(self, selector):
+                return _Visibles(True)
+
+            def get_by_text(self, texto):
+                return _Visibles(False)
 
             def eval_on_selector_all(self, *a):
                 return etiquetas
@@ -271,6 +285,67 @@ class PruebaBusqueda(unittest.TestCase):
 
         vuelos, _, _ = b.buscar(Pagina(), *b.FECHAS_IDEALES)
         self.assertEqual([(v["aerolinea"], v["total"]) for v in vuelos], [("LATAM", 9_517_440)])
+
+
+class _Visibles:
+    """Hace de locator: solo dice si hay algo visible."""
+
+    def __init__(self, hay):
+        self.hay = hay
+
+    def filter(self, visible):
+        return self
+
+    def count(self):
+        return 1 if self.hay else 0
+
+
+class PaginaGoogle(_Falso):
+    """Página de resultados que carga bien o que muestra "Oops, something went wrong"."""
+
+    def __init__(self, oops=False):
+        self.oops = oops
+
+    def locator(self, selector):
+        return _Visibles(not self.oops)
+
+    def get_by_text(self, texto):
+        return _Visibles(self.oops)
+
+
+class PruebaErrorDeGoogle(unittest.TestCase):
+    def test_espera_los_resultados(self):
+        b.esperar_resultados(PaginaGoogle(), b.SEL_VUELO)
+
+    def test_si_google_responde_oops_falla_de_una_vez_para_reintentar_en_sesion_nueva(self):
+        with self.assertRaises(b.ErrorDeGoogle):
+            b.esperar_resultados(PaginaGoogle(oops=True), b.SEL_VUELO)
+
+    def test_cada_intento_de_reserva_va_en_una_sesion_nueva(self):
+        usadas = []
+        original = b.link_reserva_google
+        b.link_reserva_google = lambda page, v: usadas.append(page) or ("https://reserva" if len(usadas) > 1 else None)
+
+        class Pagina(_Falso):
+            cerrada = False
+
+            def close(self):
+                self.cerrada = True
+
+            def inner_text(self, selector):
+                return PruebaPaginaDeReserva.JUNTA
+
+        principal = Pagina()
+        try:
+            v = {"aerolinea": "Avianca"}
+            b.completar_reserva(principal, v)
+        finally:
+            b.link_reserva_google = original
+        self.assertEqual(len(usadas), 2)  # el primer intento falló y el segundo no
+        self.assertNotIn(principal, usadas)  # nunca en la sesión de la búsqueda
+        self.assertIsNot(usadas[0], usadas[1])
+        self.assertTrue(all(pagina.cerrada for pagina in usadas))
+        self.assertEqual((v["reserva"], v["precio_real"]), ("https://reserva", 9_556_240))
 
 
 class PruebaPaginaDeReserva(unittest.TestCase):
@@ -306,22 +381,6 @@ class PruebaPaginaDeReserva(unittest.TestCase):
     def test_no_lee_un_precio_que_no_sea_para_los_4(self):
         texto = self.JUNTA.replace("for 4 adults", "for 1 adult")
         self.assertEqual(b.precio_ida_vuelta(texto, "Avianca"), (None, False))
-
-    def test_reintenta_el_link_si_el_primer_clic_falla(self):
-        intentos = []
-        original = b.link_reserva_google
-        b.link_reserva_google = lambda page, v: intentos.append(1) or ("https://reserva" if len(intentos) > 1 else None)
-
-        class Pagina(_Falso):
-            def inner_text(self, selector):
-                return PruebaPaginaDeReserva.JUNTA
-
-        try:
-            v = {"aerolinea": "Avianca"}
-            b.completar_reserva(Pagina(), v)
-        finally:
-            b.link_reserva_google = original
-        self.assertEqual((len(intentos), v["reserva"], v["precio_real"]), (2, "https://reserva", 9_556_240))
 
     def test_no_confunde_otra_aerolinea(self):
         self.assertEqual(b.precio_ida_vuelta(self.JUNTA, "LATAM"), (None, False))
