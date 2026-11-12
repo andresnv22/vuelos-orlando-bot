@@ -47,7 +47,7 @@ class PruebaAlertas(unittest.TestCase):
         self.enviados = []
         self.originales = {n: getattr(b, n) for n in
                            ("sync_playwright", "abrir_navegador", "buscar", "completar_reserva", "avisar", "ESTADO",
-                            "datetime")}
+                            "datetime", "confirmar_precio")}
         # Reloj fijo para que el resultado no dependa del día en que se corren las pruebas:
         # a las 10am no toca el resumen del día (sale desde la revisión de las 6pm).
         self.ahora = datetime(2026, 11, 3, 10, 0)
@@ -63,6 +63,9 @@ class PruebaAlertas(unittest.TestCase):
         b.abrir_navegador = lambda p: (_Falso(), _Falso())
         b.buscar = self._buscar
         b.completar_reserva = self._completar
+        # Segunda lectura antes de avisar: por defecto sale igual que la primera.
+        self.segunda = "igual"
+        b.confirmar_precio = lambda page, v: v["precio_real"] if self.segunda == "igual" else self.segunda
         b.avisar = lambda asunto, *resto: self.enviados.append(asunto) or True
         self.tmp = tempfile.TemporaryDirectory()
         b.ESTADO = Path(self.tmp.name) / "estado.json"
@@ -211,9 +214,38 @@ class PruebaAlertas(unittest.TestCase):
         self.assertEqual(len(avisos), 1)
         self.assertIn("¡Precio bueno!", avisos[0])
 
+    def test_no_avisa_si_la_segunda_lectura_ya_no_esta_bajo_el_tope(self):
+        # Como el 11/11 a las 6:36pm: la página mostró un rato un precio que después ya no estaba.
+        self.segunda = self.umbral_total(1.04)
+        avisos = self.revisar(self.umbral_total(1.04), self.umbral_total(0.90))
+        self.assertFalse(any("Precio bueno" in a for a in avisos))
+
+    def test_avisa_con_el_precio_de_la_segunda_lectura(self):
+        self.segunda = self.umbral_total(0.97)
+        avisos = self.revisar(self.umbral_total(0.94), self.umbral_total(0.90))
+        self.assertEqual(len(avisos), 1)
+        self.assertIn(b.cop(self.umbral_total(0.97)), avisos[0])
+
+    def test_si_la_segunda_lectura_no_carga_no_dice_precio_bueno(self):
+        self.segunda = None
+        avisos = self.revisar(self.umbral_total(1.04), self.umbral_total(0.90))
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("no pude confirmar", avisos[0])
+
+    def test_el_resumen_del_dia_dice_el_precio_real(self):
+        self.ahora = datetime(2026, 11, 3, 18, 0)
+        avisos = self.revisar(self.umbral_total(1.3), self.umbral_total(1.12))
+        self.assertEqual(len(avisos), 1)
+        self.assertIn(f"precio real más bajo {b.cop(self.umbral_total(1.12))}", avisos[0])
+
     def test_guarda_el_historial(self):
         self.revisar(self.umbral_total(1.3), self.umbral_total(1.4))
-        self.assertEqual(len(json.loads(b.ESTADO.read_text())["revisiones"]), 1)
+        self.revisar(self.umbral_total(0.94), self.umbral_total(0.98))
+        revisiones = json.loads(b.ESTADO.read_text())["revisiones"]
+        self.assertEqual(len(revisiones), 2)
+        self.assertNotIn("real", revisiones[0])  # el "desde" quedó lejos del tope: no se abrió la reserva
+        self.assertEqual((revisiones[1]["mejor"], revisiones[1]["real"]),
+                         (self.umbral_total(0.94), self.umbral_total(0.98)))
 
 
 class PruebaCorreoYConfig(unittest.TestCase):
@@ -235,6 +267,7 @@ class PruebaCorreoYConfig(unittest.TestCase):
 
     def test_grafica_es_un_png(self):
         estado = {"revisiones": [{"fecha": f"2026-11-0{d}T06:00", "mejor": 9_000_000 + d} for d in range(1, 4)]}
+        estado["revisiones"][1]["real"] = 9_400_000
         png = b.grafica_png(estado)
         if png is None:
             self.skipTest("matplotlib no está instalado")
@@ -347,6 +380,30 @@ class PruebaErrorDeGoogle(unittest.TestCase):
         self.assertTrue(all(pagina.cerrada for pagina in usadas))
         self.assertEqual((v["reserva"], v["precio_real"]), ("https://reserva", 9_556_240))
 
+    def test_si_ya_tiene_el_link_reintenta_abriendolo_directo_sin_repetir_la_busqueda(self):
+        busquedas, abiertas = [], []
+        original = b.link_reserva_google
+        b.link_reserva_google = lambda page, v: busquedas.append(page) or "https://reserva?hl=es"
+
+        class Pagina(_Falso):
+            def goto(self, url, **k):
+                abiertas.append(url)
+
+            def get_by_text(self, texto):  # la primera página de reserva respondió "Oops"
+                return _Visibles(not abiertas)
+
+            def inner_text(self, selector):
+                return PruebaPaginaDeReserva.JUNTA if abiertas else "Oops, something went wrong"
+
+        try:
+            v = {"aerolinea": "Avianca", "salida": "2026-12-22"}
+            b.completar_reserva(Pagina(), v)
+        finally:
+            b.link_reserva_google = original
+        self.assertEqual(len(busquedas), 1)
+        self.assertEqual(abiertas, ["https://reserva?hl=en"])
+        self.assertEqual(v["precio_real"], 9_556_240)
+
 
 class PruebaPaginaDeReserva(unittest.TestCase):
     # Textos como los que muestra Google Flights en la página de reserva (en inglés).
@@ -384,6 +441,37 @@ class PruebaPaginaDeReserva(unittest.TestCase):
 
     def test_no_confunde_otra_aerolinea(self):
         self.assertEqual(b.precio_ida_vuelta(self.JUNTA, "LATAM"), (None, False))
+
+
+class PruebaSegundaLectura(unittest.TestCase):
+    def test_vuelve_a_abrir_el_link_del_correo_en_una_sesion_nueva(self):
+        abiertas = []
+
+        class Pagina(_Falso):
+            def goto(self, url, **k):
+                abiertas.append((self, url))
+
+            def inner_text(self, selector):
+                return PruebaPaginaDeReserva.JUNTA
+
+        principal = Pagina()
+        v = {"aerolinea": "Avianca", "salida": "2026-12-22", "reserva": "https://reserva?tfs=x&hl=es&gl=CO"}
+        self.assertEqual(b.confirmar_precio(principal, v), 9_556_240)
+        self.assertEqual(len(abiertas), 1)
+        self.assertIsNot(abiertas[0][0], principal)
+        self.assertIn("hl=en", abiertas[0][1])  # el bot lee la página en inglés
+
+    def test_si_no_carga_lo_intenta_otra_vez_y_si_no_devuelve_none(self):
+        intentos = []
+
+        class Pagina(_Falso):
+            def goto(self, url, **k):
+                intentos.append(url)
+                raise TimeoutError
+
+        v = {"aerolinea": "Avianca", "salida": "2026-12-22", "reserva": "https://reserva?hl=es"}
+        self.assertIsNone(b.confirmar_precio(Pagina(), v))
+        self.assertEqual(len(intentos), 2)
 
 
 class PruebaTope(unittest.TestCase):

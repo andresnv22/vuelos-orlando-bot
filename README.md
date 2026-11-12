@@ -10,7 +10,7 @@ que ningún computador esté prendido.
 
 - Cada 3 horas, de 6am a 9pm hora de Colombia, busca en Google Flights. Lo despierta un
   [despertador](#despertador) a las 6, 9, 12, 3, 6 y 9 en punto. El horario propio de GitHub
-  (cada media hora, solo revisa si ya pasaron más de 2h40) queda de respaldo, porque GitHub se salta muchas corridas:
+  (cada media hora, una sola revisión por franja de 3 horas) queda de respaldo, porque GitHub se salta muchas corridas:
   - las **fechas ideales** (22 → 27 dic) y las cercanas (hasta 2 días antes o después, de 4 a 7 noches);
   - solo vuelos **directos de Avianca y LATAM** (sin Frontier), para **4 pasajeros**, con precios en **COP**.
     El filtro va en la búsqueda misma: si Frontier entra, Google arma el "desde" de LATAM o Avianca con la
@@ -19,17 +19,21 @@ que ningún computador esté prendido.
   en la línea "Book with LATAM/Avianca · Airline" (ida y vuelta en una sola compra, para los 4). No cuenta
   "Separate tickets" ni otras aerolíneas que venden los mismos vuelos (Delta vende vuelos de LATAM en dólares).
   Revisa hasta 8 fechas, empezando por las ideales, hasta encontrar una que de verdad esté bajo el tope.
-  Si una fecha o un link no cargan, lo intenta una vez más.
+  Si una fecha no carga, lo intenta una vez más; si la página de reserva no carga, hasta 3 veces, cada una en
+  una sesión nueva del navegador (si ya tiene el link, lo abre directo sin repetir la búsqueda).
+- Antes de avisar, **vuelve a leer el precio** con el mismo link que va en el correo, en otra sesión. Avisa con
+  esa segunda lectura y solo si también queda bajo el tope (el 11/11 Google mostró un rato $8.986.800 que a
+  los 15 minutos ya era $10.430.880). De la página que confirmó el precio queda una captura en el artefacto **capturas**.
 - Manda un correo con diseño, botones para **reservar en la web oficial** de Avianca o LATAM, el link a
-  **la misma búsqueda que hizo el bot** y una **gráfica** de cómo ha ido el precio.
+  **la misma búsqueda que hizo el bot** y una **gráfica** de cómo ha ido el precio (el "desde" de la búsqueda y, cuando se revisó, el precio real).
 
 ## Cuándo llega un correo
 
 | Correo | Cuándo |
 |---|---|
-| 🔥 **¡Precio bueno!** | El precio real en la aerolínea, ida y vuelta en una sola reserva para los 4, queda por debajo del tope (menos de $10.000.000). Llega en cada revisión (cada 3 horas) mientras siga así. El precio "desde" de la búsqueda nunca basta. |
+| 🔥 **¡Precio bueno!** | El precio real en la aerolínea, ida y vuelta en una sola reserva para los 4, queda por debajo del tope (menos de $10.000.000). Llega en cada revisión (cada 3 horas) mientras siga así. El precio "desde" de la búsqueda nunca basta, y el real se lee dos veces. |
 | ⬆️ **Subió el precio** | Una sola vez, cuando venía avisando y el precio real ya no está bajo el tope. Después no llega nada hasta que vuelva a bajar. |
-| ✈️ **Resumen del día** | A las 6pm, si ese día no salió otro aviso: el precio más barato del día, para saber que el bot sigue vivo aunque el precio esté sobre el tope. |
+| ✈️ **Resumen del día** | A las 6pm, si ese día no salió otro aviso: el precio real más barato del día, para saber que el bot sigue vivo aunque el precio esté sobre el tope. |
 | ⚠️ **No se pudo revisar** / **no pude confirmar el precio real** | Google no devolvió resultados, o la página de la aerolínea no mostró el precio de una opción que en la búsqueda sale bajo el tope (máximo uno al día). |
 
 Si un correo no se puede enviar, la corrida queda en rojo y GitHub avisa por correo a la cuenta del repositorio.
@@ -67,8 +71,8 @@ En la pestaña **Actions → Bot vuelos BOG-MCO → Run workflow** se puede eleg
 - `prueba`: revisa 2 fechas y manda un correo de prueba con precios y links reales;
 - `resumen`: hace la revisión completa y manda el resumen;
 - `normal`: lo mismo que la corrida programada;
-- `auto`: como el horario, solo revisa si ya pasaron más de 2h40 desde la última vez;
-- `diagnostico`: abre la página de reserva de cada fecha y mide cuánto tarda (`diagnostico.py`), sin correo ni historial.
+- `auto`: como el horario, solo revisa si en esta franja de 3 horas todavía no ha revisado;
+- `diagnostico`: abre la página de reserva de cada fecha, mide cuánto tarda y hace la segunda lectura (`diagnostico.py`), sin correo ni historial.
 
 Cuando no sale un link de reserva, la corrida guarda lo que mostraba Google en el artefacto **capturas**
 (se descarga desde la corrida en la pestaña Actions; dura 7 días).
@@ -79,7 +83,7 @@ El horario de GitHub (`schedule`) se salta muchas corridas: el 2/11 no hizo ning
 Por eso una rutina en la nube de Claude, **Despertador bot vuelos**
 ([claude.ai/code/routines](https://claude.ai/code/routines)), empuja un commit vacío a la rama
 `claude/despertador` a las 6, 9, 12, 3, 6 y 9 en punto. Ese push lanza el workflow al instante; el workflow
-siempre usa el código y el historial de `main`, y la regla de las 2h40 evita revisiones repetidas.
+siempre usa el código y el historial de `main`, y la regla de una revisión por franja evita revisiones repetidas.
 
 La rutina gasta del uso de la cuenta de Claude: si ese uso está agotado a la hora en punto, no suena
 (pasó el 2/11 a las 6pm). Por eso hay un segundo despertador en el Mac,
@@ -94,6 +98,11 @@ launchctl bootout gui/$(id -u)/com.vuelos-orlando.despertador   # para quitarlo
 ```
 
 El horario de GitHub queda de respaldo, aunque casi no sirve: el 2/11 corrió 2 de unas 32 veces.
+
+## Máquina de GitHub
+
+El workflow usa `ubuntu-24.04` fijo y no `ubuntu-latest`: el 11/11 `ubuntu-latest` pasó a Ubuntu 26.04, donde
+Playwright 1.60 no puede instalar Chromium, y las corridas de las 6pm fallaron.
 
 ## Desarrollo
 

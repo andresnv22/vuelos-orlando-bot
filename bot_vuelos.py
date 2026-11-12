@@ -256,10 +256,16 @@ def completar_reserva(page, v):
             page.wait_for_timeout(3000 * intento)
         pagina = sesion_nueva(page.context.browser)
         try:
-            reserva = link_reserva_google(pagina, v)
-            if reserva:
+            if v["reserva"]:
+                # Ya se tiene el link y solo faltó el precio: se abre directo, sin repetir la búsqueda
+                # (cada vez que se repite la misma búsqueda es más probable que Google responda "Oops").
+                pagina.goto(v["reserva"].replace("hl=es", "hl=en"), wait_until="domcontentloaded", timeout=60000)
+                v["precio_real"], v["solo_separados"] = leer_precio(pagina, v)
+            elif reserva := link_reserva_google(pagina, v):
                 v["reserva"] = reserva
                 v["precio_real"], v["solo_separados"] = leer_precio(pagina, v)
+        except Exception as e:
+            print(f"  no se pudo abrir la página de reserva ({v['aerolinea']}): {type(e).__name__}")
         finally:
             pagina.context.close()
         if v["precio_real"] or v["solo_separados"]:
@@ -280,6 +286,42 @@ def leer_precio(page, v):
     if not separados:
         capturar(page, f"{v['salida']}_{v['aerolinea']}_precio")
     return None, separados
+
+
+def confirmar_precio(page, v):
+    """Segunda lectura del precio real, en una sesión nueva y con el mismo link que va en el correo.
+    Google a veces muestra por un rato un precio que después ya no está: el 11/11 a las 6:36pm el bot leyó
+    $8.986.800 (Avianca 22 → 27 dic) y 15 minutos después, desde Colombia y desde GitHub, era $10.430.880.
+    Devuelve el precio, o None si no se pudo leer."""
+    for intento in range(2):
+        if intento:
+            page.wait_for_timeout(3000)
+        pagina = sesion_nueva(page.context.browser)
+        try:
+            pagina.goto(v["reserva"].replace("hl=es", "hl=en"), wait_until="domcontentloaded", timeout=60000)
+            precio, _ = leer_precio(pagina, v)
+            if precio:
+                if motivo_umbral(precio):  # queda la prueba de lo que mostraba la página (artefacto "capturas")
+                    capturar(pagina, f"{v['salida']}_{v['aerolinea']}_aviso")
+                return precio
+        except Exception as e:
+            print(f"  no se pudo volver a abrir la página de reserva: {type(e).__name__}")
+        finally:
+            pagina.context.close()
+    return None
+
+
+def confirmar_bajo_tope(page, vuelos):
+    """Antes de avisar, vuelve a leer el precio de cada opción que salió bajo el tope y se queda con la
+    segunda lectura (la más reciente). Si no se pudo leer otra vez, la opción queda sin confirmar y no se
+    presenta como precio real."""
+    for v in vuelos:
+        if v.get("precio_real") and motivo_umbral(v["precio_real"]):
+            primero = v["precio_real"]
+            v["precio_real"] = confirmar_precio(page, v)
+            v["sin_confirmar"] = v["precio_real"] is None
+            despues = cop(v["precio_real"]) if v["precio_real"] else "no se pudo leer"
+            print(f"  segunda lectura {v['aerolinea']} {v['salida']} → {v['regreso']}: {cop(primero)}, después {despues}")
 
 
 def precio_ida_vuelta(texto, aerolinea):
@@ -357,6 +399,11 @@ def motivo_umbral(total):
     return None
 
 
+def mejor_real(vuelos):
+    """La opción con el precio real (de la aerolínea, ya confirmado) más bajo, o None."""
+    return min((v for v in vuelos if v.get("precio_real")), key=lambda v: v["precio_real"], default=None)
+
+
 def vale_revisar(desde):
     """Si con este precio "desde" vale la pena abrir la página de reserva para ver el real."""
     return desde < UMBRAL_TOTAL * MARGEN_DESDE
@@ -369,8 +416,18 @@ def detalle(vuelos, estado):
         f"Vuelos DIRECTOS Bogotá → Orlando · {PASAJEROS} adultos · ida y vuelta · solo {' y '.join(AEROLINEAS.values())}",
         f"Revisado: {datetime.now():%d/%m/%Y %H:%M}",
         "",
-        f"MEJOR PRECIO: {cop(mejor['total'])} COP en total "
-        f"({cop(mejor['total'] // PASAJEROS)} por persona)",
+    ]
+    real = mejor_real(vuelos)
+    if real:
+        lineas += [
+            f"MEJOR PRECIO REAL: {cop(real['precio_real'])} COP en total ({cop(real['precio_real'] // PASAJEROS)} "
+            f"por persona), ida y vuelta en una sola reserva con {real['aerolinea']}",
+            f"  sale {fecha_corta(real['salida'])} {real['hora']} · regresa {fecha_corta(real['regreso'])} · "
+            f"{real['noches']} noches",
+            "",
+        ]
+    lineas += [
+        f"Más barato en la búsqueda (\"desde\", no es el precio final): {cop(mejor['total'])} COP en total",
         f"  {mejor['aerolinea']} · sale {fecha_corta(mejor['salida'])} {mejor['hora']} · "
         f"regresa {fecha_corta(mejor['regreso'])} · {mejor['noches']} noches"
         + (" · tarifa básica, sin maleta de mano" if mejor["basica"] else ""),
@@ -379,7 +436,7 @@ def detalle(vuelos, estado):
         lineas.append(f"  Google dice que los precios para esas fechas están {INSIGHT_ES[mejor['insight']]}")
     if estado["revisiones"]:
         minimo = min(r["mejor"] for r in estado["revisiones"])
-        lineas.append(f"  Mínimo visto desde que empezó el bot: {cop(min(minimo, mejor['total']))}")
+        lineas.append(f"  Mínimo \"desde\" visto desde que empezó el bot: {cop(min(minimo, mejor['total']))}")
 
     lineas += ["", "TOP 10 OPCIONES", "-" * 60]
     for i, v in enumerate(vuelos[:10], 1):
@@ -529,12 +586,17 @@ def grafica_png(estado):
         return None
     fig, ax = plt.subplots(figsize=(7, 3), dpi=120)
     ax.plot([p[0] for p in puntos], [p[1] for p in puntos], color="#1a73e8", linewidth=2, marker="o", markersize=3,
-            label=f'Mejor precio "desde" para los {PASAJEROS}')
+            label=f'Precio "desde" en la búsqueda (no es el final)')
+    reales = [(datetime.fromisoformat(r["fecha"]), r["real"] / 1e6)
+              for r in estado["revisiones"] if r.get("real") and r.get("fecha", "").startswith("20")]
+    if reales:
+        ax.scatter([p[0] for p in reales], [p[1] for p in reales], color="#e8710a", s=18, zorder=3,
+                   label="Precio real en la aerolínea (cuando se revisó)")
     ax.axhline(UMBRAL_TOTAL / 1e6, color="#d93025", linestyle="--", linewidth=1.5, label="Tu tope")
     ax.set_ylabel("Millones COP ida y vuelta")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
     ax.grid(alpha=0.3)
-    ax.legend(loc="upper right", fontsize=8, frameon=False)
+    ax.legend(loc="upper left", fontsize=8, frameon=False)
     for borde in ("top", "right"):
         ax.spines[borde].set_visible(False)
     fig.tight_layout()
@@ -745,13 +807,14 @@ def main():
             # Solo cuenta el precio real de la aerolínea, ida y vuelta en una sola reserva. Cada opción
             # se juzga con su propio precio, y un "desde" sin confirmar nunca se presenta como bueno.
             revisados = [v for v in vuelos if "reserva" in v]
+            confirmar_bajo_tope(page, revisados)  # un precio bajo el tope se lee dos veces antes de avisar
             bajo_tope = [v["precio_real"] for v in revisados if v.get("precio_real") and motivo_umbral(v["precio_real"])]
             if bajo_tope:
                 precio_alerta = min(bajo_tope)
                 motivo = motivo_umbral(precio_alerta)
             else:
                 sin_confirmar = [v["total"] for v in revisados if not v.get("precio_real")
-                                 and not v.get("solo_separados") and motivo_umbral(v["total"])]
+                                 and not v.get("solo_separados") and (motivo_umbral(v["total"]) or v.get("sin_confirmar"))]
         browser.close()
 
     # Cada aviso lleva los cambios de estado que solo se guardan si de verdad sale,
@@ -783,9 +846,9 @@ def main():
             print(f"No se pudo confirmar el precio real (desde {cop(min(sin_confirmar))})")
             if estado["ultimo_aviso_error"] != hoy:  # un solo aviso de este tipo por día
                 intro = (
-                    "No pude leer el precio real en la página de la aerolínea, así que no sé si hay algo bajo "
-                    f"tu tope de {cop(UMBRAL_TOTAL)}. En la búsqueda sale desde {cop(min(sin_confirmar))}, pero "
-                    "el precio real suele ser más alto. Lo vuelvo a intentar en la próxima revisión."
+                    "No pude leer (o confirmar con una segunda lectura) el precio real en la página de la aerolínea, "
+                    f"así que no sé si hay algo bajo tu tope de {cop(UMBRAL_TOTAL)}. En la búsqueda sale desde "
+                    f"{cop(min(sin_confirmar))}, que no es el precio final. Lo vuelvo a intentar en la próxima revisión."
                 )
                 avisos.append((
                     "⚠️ Bot vuelos BOG→MCO: no pude confirmar el precio real",
@@ -816,14 +879,19 @@ def main():
                 f"bajo tu tope.\n"
                 f"Te aviso apenas el precio real baje de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS}.\n\n"
             )
+            real = mejor_real(vuelos)
             avisos.append((
-                f"✈️ Resumen del día BOG→MCO: lo más barato desde {cop(mejor['total'])} COP",
+                f"✈️ Resumen del día BOG→MCO: precio real más bajo {cop(real['precio_real'])} COP" if real
+                else f"✈️ Resumen del día BOG→MCO: lo más barato desde {cop(mejor['total'])} COP (sin confirmar)",
                 intro + cuerpo,
                 intro + texto_recordatorio(vuelos),
                 {"ultimo_resumen": hoy},
                 intro.strip(),
             ))
-        estado["revisiones"].append({"fecha": ahora.isoformat(timespec="minutes"), "mejor": mejor["total"]})
+        revision = {"fecha": ahora.isoformat(timespec="minutes"), "mejor": mejor["total"]}
+        if mejor_real(vuelos):  # el precio real solo se conoce cuando se abrió la página de reserva
+            revision["real"] = mejor_real(vuelos)["precio_real"]
+        estado["revisiones"].append(revision)
         print(f"Mejor: {cop(mejor['total'])} · {mejor['aerolinea']} · ¿bueno? {motivo or 'no'}")
 
     fallo_aviso = False

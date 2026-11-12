@@ -4,8 +4,8 @@ on:
   schedule:
     # GitHub no garantiza los horarios: retrasa y se salta muchas corridas (el 31/10 hizo 2 de 10).
     # Por eso se despierta cada media hora (6am a 9:59pm hora de Colombia = UTC - 5) y el paso
-    # "¿Toca revisar?" solo deja seguir si ya pasaron más de 2h40 desde la última revisión (así sale
-    # una cada 3 horas). Si GitHub se salta una, la siguiente la recupera.
+    # "¿Toca revisar?" deja seguir una sola revisión por franja de 3 horas (6-9, 9-12, 12-3, 3-6, 6-9, 9pm).
+    # Si GitHub se salta una, la siguiente de la misma franja la recupera.
     # Minutos 7 y 37 y no en punto: a las horas en punto GitHub está más saturado.
     # El que de verdad lo despierta a tiempo es el push de abajo; este horario de GitHub queda de respaldo.
     - cron: "7,37 0-2,11-23 * * *"
@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   revisar:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # fija: el 11/11 ubuntu-latest pasó a 26.04 y Playwright no instala Chromium ahí
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -48,10 +48,15 @@ jobs:
           ahora = datetime.now()
           revisiones = json.load(open("estado.json")).get("revisiones", [])
           ultima = datetime.fromisoformat(revisiones[-1]["fecha"]) if revisiones else None
+          def franja(t):  # 6-9am, 9-12, 12-3pm, 3-6pm, 6-9pm y 9pm
+              return t.date(), (t.hour - 6) // 3
           if os.environ["EVENTO"] == "workflow_dispatch" and os.environ["MODO"] != "auto":
               si = True  # corrida lanzada a mano
           else:
-              si = 6 <= ahora.hour <= 21 and (ultima is None or ahora - ultima >= timedelta(hours=2, minutes=40))
+              # Una revisión por franja (antes era "2h40 desde la última", y una revisión a mano a la 1pm hacía
+              # saltar la de las 3pm). La hora mínima entre revisiones evita dos seguidas en el cambio de franja.
+              si = 6 <= ahora.hour <= 21 and (ultima is None or (
+                  franja(ahora) != franja(ultima) and ahora - ultima >= timedelta(hours=1)))
           print(f"Ahora {ahora:%d/%m %H:%M}, última revisión {ultima:%d/%m %H:%M}" if ultima else "Sin revisiones")
           print("Toca revisar" if si else "Todavía no toca; se espera a la próxima")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
