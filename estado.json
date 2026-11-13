@@ -260,9 +260,14 @@
       "fecha": "2026-11-13T09:25",
       "mejor": 10394336,
       "real": 10445520
+    },
+    {
+      "fecha": "2026-11-13T12:10",
+      "mejor": 9462200,
+      "real": 9462200
     }
   ],
-  "bajo_tope": false,
+  "bajo_tope": true,
   "ultimo_resumen": "2026-11-12",
   "ultimo_aviso_error": "2026-11-09",
   "ultimo_aviso_mail": null
