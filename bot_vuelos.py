@@ -48,8 +48,9 @@ NOCHES_MIN, NOCHES_MAX = CONFIG["noches_min"], CONFIG["noches_max"]
 # Google arma el "desde" de LATAM o Avianca con la vuelta en Frontier, que son tiquetes separados.
 AEROLINEAS = CONFIG["aerolineas"]
 UMBRAL_TOTAL = CONFIG["umbral_total_cop"]  # COP ida y vuelta para todos: avisa si el precio queda por debajo
-MAX_VERIFICAR = 8  # cuántas fechas como máximo se revisan en la página de la aerolínea por corrida
 MARGEN_DESDE = 1.05  # el "desde" a veces sale un poco más alto que el real: también se revisan esas fechas
+HORAS_REVISION = (6, 9, 12, 15, 18, 21)
+GRACIA_REVISION_OMITIDA = timedelta(minutes=90)
 # ------------------------------------------------
 
 # Primero tus fechas, después las cercanas.
@@ -92,6 +93,34 @@ def guardar_estado(estado):
             ESTADO.write_text(json.dumps(estado, indent=2))
         except Exception:
             pass
+
+
+def revisiones_omitidas(estado, ahora):
+    """Franjas que ya deberían haberse revisado, pero quedaron después de la última revisión.
+
+    La alerta se activa solo al pasar 90 minutos de la hora esperada. Eso permite que GitHub
+    llegue tarde sin generar falsos positivos, pero detecta una franja de tres horas que se
+    perdió por completo cuando el bot vuelva a ejecutarse.
+    """
+    fechas = []
+    for revision in estado.get("revisiones", []):
+        try:
+            fechas.append(datetime.fromisoformat(revision["fecha"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not fechas:
+        return []  # La primera revisión no tiene una referencia contra la cual medir un salto.
+    ultima = max(fechas)
+    limite = ahora - GRACIA_REVISION_OMITIDA
+    omitidas = []
+    dia = ultima.date()
+    while dia <= limite.date():
+        for hora in HORAS_REVISION:
+            esperada = datetime.combine(dia, datetime.min.time()).replace(hour=hora)
+            if ultima < esperada <= limite:
+                omitidas.append(esperada.isoformat(timespec="minutes"))
+        dia += timedelta(days=1)
+    return omitidas
 
 ETIQUETA = re.compile(
     r"From ([\d,]+) Colombian pesos round trip total\."
@@ -287,6 +316,47 @@ def es_ideal(v):
     return (v["salida"], v["regreso"]) == (FECHAS_IDEALES[0].isoformat(), FECHAS_IDEALES[1].isoformat())
 
 
+def mejores_por_fecha_y_aerolinea(vuelos):
+    """El vuelo inicial más barato de cada aerolínea para cada par de fechas.
+
+    Google puede mostrar varios horarios de la misma aerolínea. Para comparar Avianca con
+    LATAM de forma útil se abre solo el mejor horario de cada una, nunca se descarta una
+    aerolínea solo porque la otra salió más barata en la búsqueda inicial.
+    """
+    mejores = {}
+    for v in vuelos:
+        clave = (v["salida"], v["regreso"], v["aerolinea"])
+        if clave not in mejores or v["total"] < mejores[clave]["total"]:
+            mejores[clave] = v
+    return list(mejores.values())
+
+
+def candidatos_verificacion(vuelos):
+    """Devuelve las dos aerolíneas de cada fecha candidata, con las fechas ideales primero.
+
+    Cada fecha que amerita validar compara Avianca y LATAM si Google devolvió ambas. Si una de
+    las dos parece una ganga, también se abre la otra: así la mejor tarifa confirmada no depende
+    del precio "desde" de Google ni queda oculta por un límite arbitrario de fechas.
+    """
+    por_fecha = {}
+    for v in mejores_por_fecha_y_aerolinea(vuelos):
+        por_fecha.setdefault((v["salida"], v["regreso"]), []).append(v)
+    fechas = sorted(
+        por_fecha,
+        key=lambda fecha: (
+            fecha != (FECHAS_IDEALES[0].isoformat(), FECHAS_IDEALES[1].isoformat()),
+            min(v["total"] for v in por_fecha[fecha]),
+            fecha,
+        ),
+    )
+    seleccionadas = [fecha for fecha in fechas if any(vale_revisar(v["total"]) for v in por_fecha[fecha])]
+    candidatos = []
+    orden_aerolineas = {nombre: i for i, nombre in enumerate(AEROLINEAS.values())}
+    for fecha in seleccionadas:
+        candidatos.extend(sorted(por_fecha[fecha], key=lambda v: (orden_aerolineas.get(v["aerolinea"], 99), v["total"])))
+    return candidatos
+
+
 def opciones_para_reservar(vuelos):
     """Lo que se muestra en el aviso (máx. 3): primero lo confirmado bajo el tope en la aerolínea,
     después tus fechas y luego lo más barato. `vuelos` viene ordenado por precio "desde"."""
@@ -303,27 +373,26 @@ def opciones_para_reservar(vuelos):
 
 
 def verificar_precios(page, vuelos):
-    """Revisa en la página de la aerolínea el vuelo más barato de cada fecha que en la búsqueda sale
-    bajo el tope o cerca (tus fechas primero), hasta encontrar uno que de verdad lo esté. El precio "desde"
-    de Google no predice bien el real, así que no basta con mirar solo las 2 o 3 más baratas."""
-    por_fecha = {}
-    for v in vuelos:
-        por_fecha.setdefault((v["salida"], v["regreso"]), v)
-    candidatos = sorted(por_fecha.values(), key=lambda v: (not es_ideal(v), v["total"]))
-    for v in [v for v in candidatos if vale_revisar(v["total"])][:MAX_VERIFICAR]:
+    """Confirma ambas aerolíneas de cada fecha candidata y devuelve lo que se revisó.
+
+    No termina al encontrar la primera tarifa bajo el tope: la segunda aerolínea o una fecha
+    posterior puede tener una oferta real menor. La alerta se construye después con la menor de
+    todas las segundas lecturas confirmadas.
+    """
+    candidatos = candidatos_verificacion(vuelos)
+    for v in candidatos:
         completar_reserva(page, v)
         real = (cop(v["precio_real"]) if v.get("precio_real")
                 else "solo tiquetes separados (no cuenta)" if v.get("solo_separados") else "no se pudo leer")
         print(f"  {v['aerolinea']} {v['salida']} → {v['regreso']}: desde {cop(v['total'])}, real {real}")
-        if v.get("precio_real") and motivo_umbral(v["precio_real"]):
-            return
+    return candidatos
 
 
 def completar_reserva(page, v):
     """Pone en v el link de la página de reserva de Google (botón "Reservar con
     <aerolínea>" que lleva a su web oficial) y el precio real que da la aerolínea ahí.
     Cada intento va en una sesión nueva: en la de la búsqueda, esa misma búsqueda ya se abrió."""
-    v.update(reserva=None, precio_real=None, solo_separados=False)
+    v.update(reserva=None, precio_real=None, solo_separados=False, confirmado=False)
     for intento in range(3):  # Google a veces responde "Oops" aun en sesión nueva; al reintentar casi siempre sale
         if intento:
             page.wait_for_timeout(3000 * intento)
@@ -398,6 +467,7 @@ def confirmar_bajo_tope(page, vuelos):
             primero = v["precio_real"]
             v["precio_real"] = confirmar_precio(page, v)
             v["sin_confirmar"] = v["precio_real"] is None
+            v["confirmado"] = v["precio_real"] is not None
             despues = cop(v["precio_real"]) if v["precio_real"] else "no se pudo leer"
             print(f"  segunda lectura {v['aerolinea']} {v['salida']} → {v['regreso']}: {cop(primero)}, después {despues}")
 
@@ -786,13 +856,14 @@ def html_correo(intro, vuelos, con_grafica):
           {nota_reserva}
           <div style="font-size:12px;margin-top:10px"><a href="{escape(en_espanol(v['url']))}" style="color:#0759c7;text-decoration:underline">Ver búsqueda filtrada</a> <span style="color:#6b7280">· solo directos de {' y '.join(AEROLINEAS.values())}</span></div>
         </div>"""
-    por_combo = {}
-    for v in sorted(vuelos, key=lambda v: v["total"]):
-        por_combo.setdefault((v["salida"], v["regreso"]), v)
+    comparacion = sorted(
+        mejores_por_fecha_y_aerolinea(vuelos),
+        key=lambda v: (v["salida"], v["regreso"], v["aerolinea"]),
+    )
     combos = "".join(
-        f"<tr style='border-bottom:1px solid #edf0f3'><td style='padding:8px 6px'>{'⭐ ' if es_ideal(v) else ''}{fecha_corta(s)} → {fecha_corta(r)}<br><span style='font-size:11px;color:#6b7280'>{v['noches']} noches · {escape(v['aerolinea'])}</span></td>"
+        f"<tr style='border-bottom:1px solid #edf0f3'><td style='padding:8px 6px'>{'⭐ ' if es_ideal(v) else ''}{fecha_corta(v['salida'])} → {fecha_corta(v['regreso'])}<br><span style='font-size:11px;color:#6b7280'>{v['noches']} noches · {escape(v['aerolinea'])}</span></td>"
         f"<td style='padding:8px 6px;text-align:right;font-weight:bold'>{cop(v['total'])}</td></tr>"
-        for (s, r), v in sorted(por_combo.items())
+        for v in comparacion
     )
     grafica = ('<div style="margin:24px 0 0;padding:18px 16px;background:#f7f9fc;border-radius:12px">'
                '<h3 style="margin:0 0 10px;font-size:16px">Cómo ha ido el precio</h3><img src="cid:grafica" width="100%" '
@@ -811,7 +882,7 @@ def html_correo(intro, vuelos, con_grafica):
   {filas}
   <div style="font-size:12px;line-height:18px;color:#526071;background:#f7f9fc;border-left:3px solid #86bff4;padding:11px 12px;margin-top:18px">{escape(AYUDA_RESERVA)}</div>
   {grafica}
-  <h3 style="margin:24px 0 8px;font-size:16px">Precios iniciales por fechas</h3>
+  <h3 style="margin:24px 0 8px;font-size:16px">Comparación Avianca y LATAM por fecha</h3>
   <table width="100%" role="presentation" style="border-collapse:collapse;font-size:13px">{combos}</table>
   <p style="font-size:12px;line-height:18px;color:#6b7280;margin:24px 0 0">Tu tope: menos de {cop(UMBRAL_TOTAL)} COP ida y vuelta para los {PASAJEROS}. Precios totales con impuestos; maletas facturadas aparte. Compra solo en la web oficial de la aerolínea.</p>
   </div></div></body></html>"""
@@ -963,6 +1034,13 @@ def main():
     estado.setdefault("ultimo_resumen", None)
     estado.setdefault("ultimo_aviso_error", None)
     estado.setdefault("ultimo_aviso_mail", None)
+    estado.setdefault("revisiones_omitidas_pendientes", [])
+
+    # Si el workflow no arrancó durante una franja, la siguiente ejecución lo detecta antes de
+    # guardar su propia revisión. Se conserva como pendiente hasta que el aviso salga de verdad.
+    omitidas = set(estado["revisiones_omitidas_pendientes"])
+    omitidas.update(revisiones_omitidas(estado, ahora))
+    estado["revisiones_omitidas_pendientes"] = sorted(omitidas)
 
     print(f"\n=== Revisión {ahora:%d/%m/%Y %H:%M} ===")
     vuelos, bloqueado = [], False
@@ -1020,6 +1098,19 @@ def main():
     # Cada aviso lleva los cambios de estado que solo se guardan si de verdad sale,
     # así una alerta que no se pudo enviar se vuelve a intentar en la próxima revisión.
     avisos = []
+    if omitidas:
+        horas = ", ".join(datetime.fromisoformat(f).strftime("%d/%m %H:%M") for f in sorted(omitidas))
+        texto = (
+            f"Se omitió la revisión programada de {horas} (hora de Colombia). "
+            "Esta ejecución ya retomó el control; revisaré de nuevo en la próxima franja."
+        )
+        avisos.append((
+            "⚠️ Bot vuelos BOG→MCO: se saltó una revisión",
+            texto,
+            texto,
+            {"revisiones_omitidas_pendientes": []},
+            None,
+        ))
     if not vuelos:
         motivo = "Google pidió verificación (captcha)" if bloqueado else "Google Flights no devolvió resultados"
         print(f"Sin resultados: {motivo}")

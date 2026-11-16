@@ -143,7 +143,10 @@ class PruebaAlertas(unittest.TestCase):
     def test_nunca_dice_precio_bueno_sobre_el_tope_aunque_el_desde_baje_mucho(self):
         historial = self.umbral_total(1.20)
         self.guardar_estado([{"fecha": "2026-11-01T06:00", "mejor": historial}] * 10)
-        self.assertEqual(self.revisar(self.umbral_total(0.90), self.umbral_total(1.05)), [])
+        avisos = self.revisar(self.umbral_total(0.90), self.umbral_total(1.05))
+        # El historial viejo también debe avisar que se omitieron franjas; nunca debe convertirse
+        # en una falsa alerta de precio bueno.
+        self.assertFalse(any("Precio bueno" in aviso for aviso in avisos))
 
     def test_no_descarta_por_el_precio_real_de_otra_opcion(self):
         self.precios.update(desde=0, real=None)
@@ -186,6 +189,28 @@ class PruebaAlertas(unittest.TestCase):
         self.assertEqual(len(avisos), 1)
         self.assertIn("¡Precio bueno!", avisos[0])
         self.assertIn(b.cop(reales["Avianca"]), avisos[0])
+
+    def test_compara_avianca_y_latam_y_avisa_la_mejor_oferta_confirmada(self):
+        self.precios["desde"] = 0
+        ideal = self._buscar(None, *b.FECHAS_IDEALES)[0][0]
+        avianca = {**ideal, "aerolinea": "Avianca", "hora": "4:20 PM", "total": self.umbral_total(0.91)}
+        latam = {**ideal, "aerolinea": "LATAM", "hora": "9:00 AM", "total": self.umbral_total(0.84)}
+        b.buscar = lambda page, s, r: ([dict(avianca), dict(latam)], None, False) if (s, r) == b.FECHAS_IDEALES else ([], None, False)
+        comparadas = []
+
+        def completar(page, v):
+            comparadas.append(v["aerolinea"])
+            v["reserva"] = f"https://reserva/{v['aerolinea']}"
+            # El "desde" de LATAM era mejor, pero Avianca tiene la mejor tarifa real.
+            v["precio_real"] = self.umbral_total(0.93 if v["aerolinea"] == "Avianca" else 0.97)
+            v["solo_separados"] = False
+
+        b.completar_reserva = completar
+        avisos = self.revisar(0, 0)
+        self.assertEqual(comparadas.count("Avianca"), 1)
+        self.assertEqual(comparadas.count("LATAM"), 1)
+        self.assertEqual(len(avisos), 1)
+        self.assertIn(b.cop(self.umbral_total(0.93)), avisos[0])
 
     def test_resumen_del_dia_solo_si_ese_dia_no_salio_otro_aviso(self):
         self.ahora = datetime(2026, 11, 3, 18, 0)
@@ -274,6 +299,16 @@ class PruebaCorreoYConfig(unittest.TestCase):
             self.skipTest("matplotlib no está instalado")
         self.assertTrue(png.startswith(b"\x89PNG"))
 
+    def test_correo_muestra_las_dos_aerolineas_de_la_misma_fecha(self):
+        ideal = [d.isoformat() for d in b.FECHAS_IDEALES]
+        avianca = self.vuelo(*ideal, 9_100_000)
+        avianca["aerolinea"] = "Avianca"
+        latam = self.vuelo(*ideal, 9_200_000)
+        html = b.html_correo("intro", [avianca, latam], False)
+        self.assertIn("Comparación Avianca y LATAM por fecha", html)
+        self.assertIn("Avianca", html)
+        self.assertIn("LATAM", html)
+
     def test_grafica_ignora_registros_corruptos(self):
         estado = {
             "revisiones": [
@@ -286,6 +321,17 @@ class PruebaCorreoYConfig(unittest.TestCase):
         if png is None:
             self.skipTest("matplotlib no está instalado")
         self.assertTrue(png.startswith(b"\x89PNG"))
+
+
+class PruebaVigilancia(unittest.TestCase):
+    def test_detecta_una_franja_omitida_despues_de_la_gracia(self):
+        estado = {"revisiones": [{"fecha": "2026-11-03T06:02", "mejor": 9_000_000}]}
+        omitidas = b.revisiones_omitidas(estado, datetime(2026, 11, 3, 11, 0))
+        self.assertEqual(omitidas, ["2026-11-03T09:00"])
+
+    def test_no_marca_como_omitida_una_revision_que_aun_puede_llegar_tarde(self):
+        estado = {"revisiones": [{"fecha": "2026-11-03T06:02", "mejor": 9_000_000}]}
+        self.assertEqual(b.revisiones_omitidas(estado, datetime(2026, 11, 3, 10, 20)), [])
 
 
 

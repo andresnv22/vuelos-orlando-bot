@@ -18,7 +18,8 @@ que ningún computador esté prendido.
 - Cuando el precio está bajo el tope o cerca, abre la página de reserva y lee el **precio real que da la aerolínea**
   en la línea "Book with LATAM/Avianca · Airline" (ida y vuelta en una sola compra, para los 4). No cuenta
   "Separate tickets" ni otras aerolíneas que venden los mismos vuelos (Delta vende vuelos de LATAM en dólares).
-  Revisa hasta 8 fechas, empezando por las ideales, hasta encontrar una que de verdad esté bajo el tope.
+  En cada fecha candidata compara **Avianca y LATAM** (si Google devolvió ambas). No se detiene con la primera
+  tarifa bajo el tope: confirma cada oferta candidata y avisa la mejor.
   Si una fecha no carga, lo intenta una vez más; si la página de reserva no carga, hasta 3 veces, cada una en
   una sesión nueva del navegador (si ya tiene el link, lo abre directo sin repetir la búsqueda).
 - Antes de avisar, **vuelve a leer el precio** con el mismo link que va en el correo, en otra sesión. Avisa con
@@ -35,6 +36,7 @@ que ningún computador esté prendido.
 | ⬆️ **Subió el precio** | Una sola vez, cuando venía avisando y el precio real ya no está bajo el tope. Después no llega nada hasta que vuelva a bajar. |
 | ✈️ **Resumen del día** | A las 6pm, si ese día no salió otro aviso: el precio real más barato del día, para saber que el bot sigue vivo aunque el precio esté sobre el tope. |
 | ⚠️ **No se pudo revisar** / **no pude confirmar el precio real** | Google no devolvió resultados, o la página de la aerolínea no mostró el precio de una opción que en la búsqueda sale bajo el tope (máximo uno al día). |
+| ⚠️ **Se saltó una revisión** / **falló una revisión** | Si pasa más de 90 minutos desde una franja programada sin registro, la siguiente ejecución lo avisa. Si el workflow falla antes de terminar (incluida la instalación), GitHub manda una alerta por Gmail inmediatamente. |
 
 Si un correo no se puede enviar, la corrida queda en rojo y GitHub avisa por correo a la cuenta del repositorio.
 
@@ -116,6 +118,7 @@ python bot_vuelos.py --dry-run             # revisión real sin enviar nada
 Archivos:
 
 - `bot_vuelos.py`: el bot.
+- `notificar_fallo.py`: aviso mínimo por Gmail si una corrida de GitHub falla antes de que el bot pueda responder.
 - `diagnostico.py`: revisa si las páginas de reserva cargan (modo `diagnostico`).
 - `config.json`: fechas, pasajeros y umbral.
 - `estado.json`: historial de precios; lo actualiza el bot en cada revisión.

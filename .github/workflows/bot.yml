@@ -123,3 +123,12 @@ jobs:
             sleep 10
           done
           exit 1
+
+      - name: Avisar si la revisión falló
+        # Va al final para cubrir también un fallo al subir las capturas o guardar el historial.
+        if: failure() && steps.toca.outputs.si == 'true'
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python3 notificar_fallo.py
