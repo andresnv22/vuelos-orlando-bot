@@ -750,7 +750,7 @@ def grafica_png(estado):
 
 
 def html_correo(intro, vuelos, con_grafica):
-    """Versión HTML del correo: tabla con las mejores opciones y botones para reservar."""
+    """Correo HTML pensado primero para celular y compatible con clientes de correo comunes."""
     from html import escape
     opciones = sorted(
         opciones_para_reservar(sorted(vuelos, key=lambda v: v["total"])),
@@ -761,42 +761,60 @@ def html_correo(intro, vuelos, con_grafica):
         precio = v.get("precio_real") or v["total"]
         etiqueta = ("ida y vuelta en una sola reserva con " + escape(v["aerolinea"]) if v.get("precio_real")
                     else "desde (sin confirmar en la aerolínea)")
-        estrella = '<div style="color:#b06000;font-weight:bold;font-size:12px">⭐ TUS FECHAS</div>' if es_ideal(v) else ""
+        ideal = es_ideal(v)
+        estrella = ('<div style="display:inline-block;background:#fff3cd;color:#805b00;border-radius:999px;'
+                    'padding:5px 9px;font-weight:bold;font-size:11px;letter-spacing:.3px;margin:0 0 10px">'
+                    '⭐ TUS FECHAS IDEALES</div>') if ideal else ""
+        borde = "#d4a900" if ideal else "#dfe5ec"
+        fondo = "#fffdf4" if ideal else "#ffffff"
+        color_precio = "#087f4e" if v.get("precio_real") else "#1f2937"
+        estado = ("PRECIO CONFIRMADO" if v.get("precio_real") else "PRECIO DESDE · POR CONFIRMAR")
+        nota_reserva = (f'<div style="color:#4b5563;font-size:12px;line-height:18px;margin-top:12px">'
+                         f'✓ Abre la opción <b>“Reservar con {escape(v["aerolinea"])} · Compañía aérea”</b>. '
+                         'No elijas otra aerolínea ni “Billetes separados”.</div>'
+                         if v.get("precio_real") else
+                         '<div style="color:#6b7280;font-size:12px;line-height:18px;margin-top:12px">'
+                         'El bot encontró este precio inicial, pero no logró confirmarlo aún en la aerolínea.</div>')
         filas += f"""
-        <div style="border:1px solid #e0e0e0;border-radius:10px;padding:14px;margin:0 0 12px">
+        <div style="border:1px solid {borde};border-radius:14px;background:{fondo};padding:18px 16px;margin:0 0 14px">
           {estrella}<b style="font-size:15px">{escape(v['aerolinea'])}</b>
-          <div style="color:#555;font-size:13px;margin:2px 0 8px">{fecha_corta(v['salida'])} → {fecha_corta(v['regreso'])} · {v['noches']} noches · sale {escape(v['hora'])}</div>
-          <div style="font-size:20px;font-weight:bold">{cop(precio)} <span style="font-size:12px;font-weight:normal;color:#555">ida y vuelta para los {PASAJEROS}</span></div>
-          <div style="color:#555;font-size:12px;margin-bottom:10px">{cop(precio // PASAJEROS)} por persona · {etiqueta}</div>
-          <a href="{escape(v.get('reserva') or en_espanol(v['url']))}" style="display:inline-block;background:#1a73e8;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:bold">Reservar en {escape(v['aerolinea'])}</a>
-          {f'<div style="color:#555;font-size:12px;margin-top:8px">En la página es la línea <b>"Reservar con {escape(v["aerolinea"])} · Compañía aérea"</b>, no la de otra aerolínea ni la de "Billetes separados".</div>' if v.get("precio_real") else ""}
-          <div style="font-size:12px;margin-top:6px"><a href="{escape(en_espanol(v['url']))}" style="color:#1a73e8">Ver la búsqueda que hizo el bot</a> <span style="color:#555">(solo directos de {' y '.join(AEROLINEAS.values())})</span></div>
+          <div style="color:#4b5563;font-size:14px;line-height:21px;margin:5px 0 14px">{fecha_corta(v['salida'])} <span style="color:#8b95a1">→</span> {fecha_corta(v['regreso'])}<br>{v['noches']} noches · salida {escape(v['hora'])}</div>
+          <div style="display:inline-block;background:#eaf8f0;color:#087f4e;border-radius:999px;padding:4px 8px;font-size:10px;font-weight:bold;letter-spacing:.4px">{estado}</div>
+          <div style="font-size:25px;line-height:32px;color:{color_precio};font-weight:bold;margin:7px 0 2px">{cop(precio)} <span style="font-size:12px;font-weight:normal;color:#4b5563">COP</span></div>
+          <div style="color:#4b5563;font-size:13px;line-height:20px;margin-bottom:14px">Ida y vuelta para {PASAJEROS} personas · {cop(precio // PASAJEROS)} por persona<br><span style="color:#6b7280">{etiqueta}</span></div>
+          <a href="{escape(v.get('reserva') or en_espanol(v['url']))}" style="display:inline-block;background:#0759c7;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;font-weight:bold;font-size:14px">Ver y reservar en {escape(v['aerolinea'])} →</a>
+          {nota_reserva}
+          <div style="font-size:12px;margin-top:10px"><a href="{escape(en_espanol(v['url']))}" style="color:#0759c7;text-decoration:underline">Ver búsqueda filtrada</a> <span style="color:#6b7280">· solo directos de {' y '.join(AEROLINEAS.values())}</span></div>
         </div>"""
     por_combo = {}
     for v in sorted(vuelos, key=lambda v: v["total"]):
         por_combo.setdefault((v["salida"], v["regreso"]), v)
     combos = "".join(
-        f"<tr><td style='padding:4px 8px'>{'⭐ ' if es_ideal(v) else ''}{fecha_corta(s)} → {fecha_corta(r)} ({v['noches']} n)</td>"
-        f"<td style='padding:4px 8px;text-align:right'>{cop(v['total'])}</td>"
-        f"<td style='padding:4px 8px;color:#555'>{escape(v['aerolinea'])}</td></tr>"
+        f"<tr style='border-bottom:1px solid #edf0f3'><td style='padding:8px 6px'>{'⭐ ' if es_ideal(v) else ''}{fecha_corta(s)} → {fecha_corta(r)}<br><span style='font-size:11px;color:#6b7280'>{v['noches']} noches · {escape(v['aerolinea'])}</span></td>"
+        f"<td style='padding:8px 6px;text-align:right;font-weight:bold'>{cop(v['total'])}</td></tr>"
         for (s, r), v in sorted(por_combo.items())
     )
-    grafica = ('<h3 style="margin:24px 0 8px">Cómo ha ido el precio</h3><img src="cid:grafica" width="100%" '
-               'style="max-width:600px" alt="Gráfica del precio">') if con_grafica else ""
+    grafica = ('<div style="margin:24px 0 0;padding:18px 16px;background:#f7f9fc;border-radius:12px">'
+               '<h3 style="margin:0 0 10px;font-size:16px">Cómo ha ido el precio</h3><img src="cid:grafica" width="100%" '
+               'style="display:block;max-width:600px" alt="Gráfica del precio"></div>') if con_grafica else ""
     return f"""<!doctype html>
-<html><body style="margin:0;background:#f4f6f8;font-family:Arial,Helvetica,sans-serif;color:#202124">
-<div style="max-width:640px;margin:0 auto;background:#fff;padding:20px 16px">
-  <h2 style="margin:0 0 4px">✈️ Bogotá → Orlando · vuelos directos</h2>
-  <div style="color:#555;font-size:13px">{PASAJEROS} pasajeros · ida y vuelta · revisado {datetime.now():%d/%m/%Y %H:%M}</div>
-  <p style="font-size:15px;line-height:1.5">{escape(intro).replace(chr(10), '<br>')}</p>
+<html><body style="margin:0;background:#eef2f7;font-family:Arial,Helvetica,sans-serif;color:#172033">
+<div style="max-width:640px;margin:0 auto;padding:18px 10px">
+  <div style="background:#092d60;border-radius:14px 14px 0 0;padding:22px 18px;color:#fff">
+    <div style="font-size:12px;font-weight:bold;letter-spacing:1px;color:#a8d7ff">MONITOR DE VUELOS</div>
+    <h1 style="font-size:23px;line-height:30px;margin:6px 0 4px;color:#fff">Bogotá <span style="color:#8bd0ff">→</span> Orlando</h1>
+    <div style="font-size:13px;color:#d8e9fb">Vuelos directos · {PASAJEROS} pasajeros · ida y vuelta</div>
+  </div>
+  <div style="background:#fff;padding:20px 16px;border-radius:0 0 14px 14px">
+  <div style="color:#6b7280;font-size:12px;margin-bottom:14px">Revisado {datetime.now():%d/%m/%Y %H:%M} · hora de Colombia</div>
+  <div style="font-size:15px;line-height:23px;color:#273247;margin:0 0 18px">{escape(intro).replace(chr(10), '<br>')}</div>
   {filas}
-  <p style="font-size:12px;color:#555">{escape(AYUDA_RESERVA)}</p>
+  <div style="font-size:12px;line-height:18px;color:#526071;background:#f7f9fc;border-left:3px solid #86bff4;padding:11px 12px;margin-top:18px">{escape(AYUDA_RESERVA)}</div>
   {grafica}
-  <h3 style="margin:24px 0 8px">Mejor precio "desde" por fechas</h3>
-  <table style="border-collapse:collapse;font-size:13px">{combos}</table>
-  <p style="font-size:12px;color:#777;margin-top:24px">Tu tope: menos de {cop(UMBRAL_TOTAL)} ida y vuelta para los {PASAJEROS}.
-     Precios totales con impuestos; maletas facturadas aparte. Compra solo en la web oficial de la aerolínea.</p>
-</div></body></html>"""
+  <h3 style="margin:24px 0 8px;font-size:16px">Precios iniciales por fechas</h3>
+  <table width="100%" role="presentation" style="border-collapse:collapse;font-size:13px">{combos}</table>
+  <p style="font-size:12px;line-height:18px;color:#6b7280;margin:24px 0 0">Tu tope: menos de {cop(UMBRAL_TOTAL)} COP ida y vuelta para los {PASAJEROS}. Precios totales con impuestos; maletas facturadas aparte. Compra solo en la web oficial de la aerolínea.</p>
+  </div></div></body></html>"""
 
 
 def enviar_gmail(asunto, cuerpo, html=None, png=None):

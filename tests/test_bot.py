@@ -261,8 +261,9 @@ class PruebaCorreoYConfig(unittest.TestCase):
     def test_correo_html_tiene_botones_y_marca_tus_fechas(self):
         ideal = [d.isoformat() for d in b.FECHAS_IDEALES]
         html = b.html_correo("intro", [self.vuelo(*ideal, 9_000_000, 9_500_000)], False)
-        self.assertIn("Reservar en LATAM", html)
+        self.assertIn("Ver y reservar en LATAM", html)
         self.assertIn("TUS FECHAS", html)
+        self.assertIn("PRECIO CONFIRMADO", html)
         self.assertIn(b.cop(9_500_000), html)
 
     def test_grafica_es_un_png(self):
