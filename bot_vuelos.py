@@ -68,6 +68,31 @@ ULTIMO_DIA_REVISION = max(salida for salida, _ in COMBINACIONES) - timedelta(day
 CARPETA = Path(__file__).resolve().parent
 ESTADO = CARPETA / "estado.json"
 
+
+def cargar_estado():
+    """Lee estado.json de forma segura ante archivos vacíos o corruptos."""
+    if not ESTADO.exists():
+        return {}
+    try:
+        return json.loads(ESTADO.read_text())
+    except Exception as e:
+        print(f"Aviso: estado.json corrupto o ilegible ({e}), inicializando estado limpio.")
+        return {}
+
+
+def guardar_estado(estado):
+    """Guarda estado.json atómicamente para prevenir corrupción si el proceso se interrumpe."""
+    try:
+        tmp = ESTADO.with_suffix(".tmp")
+        tmp.write_text(json.dumps(estado, indent=2))
+        os.replace(tmp, ESTADO)
+    except Exception as e:
+        print(f"Aviso: guardado atómico falló ({e}), intentando guardado directo.")
+        try:
+            ESTADO.write_text(json.dumps(estado, indent=2))
+        except Exception:
+            pass
+
 ETIQUETA = re.compile(
     r"From ([\d,]+) Colombian pesos round trip total\."
     r"(?P<basica>This price does not include overhead bin access\. )?"
@@ -382,10 +407,10 @@ def precio_ida_vuelta(texto, aerolinea):
     con la aerolínea ("Book with Avianca · COP ..."). Las opciones de "Separate tickets" (dos
     tiquetes por aparte) y las de otras aerolíneas (p. ej. Delta, que vende vuelos de LATAM en dólares)
     no cuentan. Devuelve (precio o None, si solo había tiquetes separados)."""
-    # Verificar que el precio aplique a todos los pasajeros (en inglés o español)
+    # Verificar que el precio aplique a todos los pasajeros (en inglés o español, adultos/pasajeros/viajeros)
     valido_pasajeros = bool(
         re.search(
-            rf"(?:for\s+{PASAJEROS}\s+(?:adults|passengers)|para\s+{PASAJEROS}\s+(?:adultos|pasajeros)|{PASAJEROS}\s+(?:passengers|pasajeros|adultos))",
+            rf"(?:for\s+{PASAJEROS}\s+(?:adults|passengers|travelers)|para\s+{PASAJEROS}\s+(?:adultos|pasajeros|viajeros)|{PASAJEROS}\s+(?:passengers|pasajeros|adultos|viajeros|travelers))",
             texto,
             re.I,
         )
@@ -418,9 +443,13 @@ def link_reserva_google(page, v):
         esperar_resultados(page, SEL_VUELO)
         page.wait_for_timeout(2500)
         paso = "elegir la ida"
-        page.locator(
+        loc_ida = page.locator(
             f'{SEL_VUELO}[aria-label*="Nonstop flight with {v["aerolinea"]}"][aria-label*="at {v["hora"]}"]'
-        ).first.evaluate("e => e.click()", timeout=30000)  # el clic normal lo tapa otro elemento
+        ).first
+        try:
+            loc_ida.click(force=True, timeout=30000)
+        except Exception:
+            loc_ida.evaluate("e => e.click()", timeout=30000)
         paso = "cargar las vueltas"
         sel_vueltas = (
             f'{SEL_VUELO}:is([aria-label*="Leaves Orlando"], [aria-label*="Sale de Orlando"], '
@@ -447,7 +476,11 @@ def link_reserva_google(page, v):
         if not regresos:
             return None
         paso = "abrir la página de reserva"
-        page.locator(SEL_VUELO).nth(min(regresos)[1]).evaluate("e => e.click()")
+        loc_vuelta = page.locator(SEL_VUELO).nth(min(regresos)[1])
+        try:
+            loc_vuelta.click(force=True, timeout=30000)
+        except Exception:
+            loc_vuelta.evaluate("e => e.click()", timeout=30000)
         page.wait_for_url("**/travel/flights/booking**", timeout=30000)
         return en_espanol(page.url)
     except Exception as e:
@@ -517,8 +550,9 @@ def detalle(vuelos, estado):
     ]
     if mejor["insight"]:
         lineas.append(f"  Google dice que los precios para esas fechas están {INSIGHT_ES[mejor['insight']]}")
-    if estado["revisiones"]:
-        minimo = min(r["mejor"] for r in estado["revisiones"])
+    mejores_hist = [r["mejor"] for r in estado.get("revisiones", []) if isinstance(r.get("mejor"), (int, float))]
+    if mejores_hist:
+        minimo = min(mejores_hist)
         lineas.append(f"  Mínimo \"desde\" visto desde que empezó el bot: {cop(min(minimo, mejor['total']))}")
 
     lineas += ["", "TOP 10 OPCIONES", "-" * 60]
@@ -775,13 +809,21 @@ def enviar_gmail(asunto, cuerpo, html=None, png=None):
             f"GMAIL_APP_PASSWORD tiene {len(clave)} caracteres sin espacios (deben ser 16)."
         )
         return False
-    msg = EmailMessage()
-    msg["Subject"], msg["From"], msg["To"] = asunto, usuario, os.environ.get("EMAIL_TO") or usuario
-    msg.set_content(cuerpo)  # versión de texto, por si el lector de correo no muestra HTML
-    if html:
-        msg.add_alternative(html, subtype="html")
-        if png:
-            msg.get_payload()[1].add_related(png, "image", "png", cid="<grafica>")
+    destinatario = os.environ.get("EMAIL_TO") or EMAIL_TO or usuario
+    try:
+        msg = EmailMessage()
+        msg["Subject"], msg["From"], msg["To"] = asunto, usuario, destinatario
+        msg.set_content(cuerpo)  # versión de texto, por si el lector de correo no muestra HTML
+        if html:
+            try:
+                msg.add_alternative(html, subtype="html")
+                if png:
+                    msg.get_payload()[1].add_related(png, "image", "png", cid="<grafica>")
+            except Exception as e_html:
+                print(f"Aviso: no se pudo adjuntar HTML/gráfica ({e_html}), se enviará en texto plano.")
+    except Exception as e_msg:
+        print(f"Error preparando el correo: {e_msg}")
+        return False
     for puerto in (465, 587):  # si un puerto falla, se prueba el otro
         paso = "conectar"
         try:
@@ -818,35 +860,35 @@ def abrir_navegador(p):
         "--disable-dev-shm-usage",
         "--disable-infobars",
     ]
-    canal = "chromium" if EN_LA_NUBE else "chrome"
-    try:
-        browser = p.chromium.launch(channel=canal, headless=True, args=args)
-    except Exception:
+    if EN_LA_NUBE:
         browser = p.chromium.launch(headless=True, args=args)
+    else:
+        try:
+            browser = p.chromium.launch(channel="chrome", headless=True, args=args)
+        except Exception:
+            browser = p.chromium.launch(headless=True, args=args)
     return browser, sesion_nueva(browser)
 
 
 def sesion_nueva(browser):
     """Una página en una sesión nueva del navegador con perfil de usuario real para evitar bloqueos."""
-    page = browser.new_page(
+    es_mac = sys.platform == "darwin"
+    ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        if es_mac
+        else "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+    headers = {
+        "Accept-Language": "en-US,en;q=0.9,es-CO;q=0.8,es;q=0.7",
+        "Sec-CH-UA-Platform": '"macOS"' if es_mac else '"Linux"',
+    }
+    return browser.new_page(
         locale="en-US",
         timezone_id="America/Bogota",
-        user_agent=(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
-        ),
+        user_agent=ua,
         viewport={"width": 1366, "height": 768},
-        extra_http_headers={
-            "Accept-Language": "en-US,en;q=0.9,es-CO;q=0.8,es;q=0.7",
-        },
+        extra_http_headers=headers,
     )
-    if hasattr(page, "add_init_script"):
-        try:
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-        except Exception:
-            pass
-    return page
 
 
 def notificar_mac(titulo, mensaje):
@@ -878,7 +920,7 @@ def probar_aviso():
     intro = "Esto es una PRUEBA del bot (solo 2 fechas revisadas)."
     texto = f"{intro}\n\n" + texto_recordatorio(vuelos)
     print(texto)
-    estado = json.loads(ESTADO.read_text()) if ESTADO.exists() else {"revisiones": []}
+    estado = cargar_estado() or {"revisiones": []}
     png = grafica_png(estado)
     return avisar(f"🧪 Prueba bot vuelos BOG→MCO: desde {cop(vuelos[0]['total'])}", texto, texto,
                   html_correo(intro, vuelos, png is not None), png)
@@ -897,7 +939,7 @@ def main():
         print("El viaje ya pasó; no hay nada que revisar.")
         return
 
-    estado = json.loads(ESTADO.read_text()) if ESTADO.exists() else {}
+    estado = cargar_estado()
     estado.setdefault("revisiones", [])
     estado.setdefault("bajo_tope", False)  # si el último aviso fue de un precio bajo el tope
     estado.setdefault("ultimo_resumen", None)
@@ -1053,7 +1095,7 @@ def main():
                 f"Pendiente: {asunto}. Revisa {'Recordatorios' if AVISAR_POR == 'recordatorios' else 'Mail'}.",
             )
     if not dry_run:
-        ESTADO.write_text(json.dumps(estado, indent=2))
+        guardar_estado(estado)
     if fallo_aviso and EN_LA_NUBE:
         sys.exit(1)  # la corrida queda en rojo y GitHub te manda un correo
 
