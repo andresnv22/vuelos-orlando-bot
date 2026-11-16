@@ -81,7 +81,7 @@ RESERVAR = {
     "avianca": "https://www.avianca.com/es/",
     "latam": "https://www.latamairlines.com/co/es",
 }
-SEL_VUELO = '[aria-label*="round trip total"]'
+SEL_VUELO = '[aria-label*="round trip total"], [aria-label*="ida y vuelta"]'
 
 
 def _campo(numero, valor):
@@ -138,14 +138,51 @@ def hay_visible(page, locator):
     return locator.filter(visible=True).count() > 0
 
 
+def cerrar_consentimiento(page):
+    """Cierra avisos de cookies o consentimiento de Google si aparecen."""
+    try:
+        if not hasattr(page, "locator"):
+            return
+        btn = page.locator('button:has-text("Accept all"), button:has-text("Aceptar todo"), button:has-text("I agree"), button:has-text("Acepto todo")')
+        if hay_visible(page, btn) and hasattr(btn, "first") and hasattr(btn.first, "click"):
+            btn.first.click(timeout=2000)
+            page.wait_for_timeout(1000)
+    except Exception:
+        pass
+
+
+def intentar_recargar_oops(page):
+    """Si Google muestra botón de 'Reload' o 'Volver a cargar', hace clic para reintentar la carga."""
+    try:
+        if not hasattr(page, "locator"):
+            return False
+        btn = page.locator("button:has-text('Reload'), button:has-text('Volver a cargar'), button:has-text('Reintentar')")
+        if hay_visible(page, btn):
+            if hasattr(btn, "first") and hasattr(btn.first, "click"):
+                btn.first.click(timeout=3000)
+                page.wait_for_timeout(2500)
+                return True
+            elif hasattr(btn, "click"):
+                btn.click()
+                page.wait_for_timeout(2500)
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def esperar_resultados(page, selector):
-    """Espera hasta 30 s a que aparezca `selector`. Si Google responde "Oops, something went wrong", falla de una
-    vez: Google lo hace cuando en la misma sesión se abre la misma búsqueda más de dos veces, y recargar cuenta
-    como otra vez. Lo que sirve es volver a intentar en una sesión nueva (ver sesion_nueva)."""
+    """Espera hasta 30 s a que aparezca `selector`. Si Google responde "Oops, something went wrong",
+    intenta recargar una vez con el botón de Reload si está presente. Si aún así persiste, lanza ErrorDeGoogle."""
+    recargado = False
     for _ in range(60):
         if hay_visible(page, page.locator(selector)):
             return
+        cerrar_consentimiento(page)
         if hay_visible(page, page.get_by_text(OOPS)):
+            if not recargado and intentar_recargar_oops(page):
+                recargado = True
+                continue
             raise ErrorDeGoogle(OOPS)
         page.wait_for_timeout(500)
     raise TimeoutError(f"no aparecieron resultados ({selector})")
@@ -156,10 +193,11 @@ def buscar(page, salida, regreso):
     for intento in range(3):  # Google a veces tarda, sobre todo al despertar el Mac
         try:
             page.goto(url_busqueda(salida, regreso), wait_until="domcontentloaded", timeout=60000)
+            cerrar_consentimiento(page)
             break
         except Exception as e:
             print(f"  intento {intento + 1} falló: {type(e).__name__}")
-            page.wait_for_timeout(15000)
+            page.wait_for_timeout(5000 * (intento + 1))
     else:
         return [], None, False
     if "/sorry/" in page.url or "unusual traffic" in page.content().lower():
@@ -167,10 +205,20 @@ def buscar(page, salida, regreso):
     try:
         esperar_resultados(page, SEL_VUELO)
     except Exception:
-        return [], None, False
+        try:
+            # Reintento recargando si la carga inicial falló transitoriamente
+            page.wait_for_timeout(2000)
+            if hasattr(page, "reload"):
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+                cerrar_consentimiento(page)
+                esperar_resultados(page, SEL_VUELO)
+            else:
+                return [], None, False
+        except Exception:
+            return [], None, False
     page.wait_for_timeout(2500)  # dejar que termine de cargar la lista
     etiquetas = page.eval_on_selector_all(
-        '[aria-label*="round trip total"]',
+        SEL_VUELO,
         "els => els.map(e => e.getAttribute('aria-label'))",
     )
     m_ins = INSIGHT.search(page.inner_text("body"))
@@ -275,11 +323,16 @@ def completar_reserva(page, v):
 def leer_precio(page, v):
     """(precio real, si solo había tiquetes separados) de la página de reserva ya abierta."""
     separados = False
+    recargado = False
     for _ in range(12):  # los precios de la aerolínea tardan unos segundos en cargar
+        cerrar_consentimiento(page)
         precio, separados = precio_ida_vuelta(page.inner_text("body"), v["aerolinea"])
         if precio:
             return precio, False
-        if hay_visible(page, page.get_by_text(OOPS)):  # no va a cargar: mejor reintentar en otra sesión
+        if hay_visible(page, page.get_by_text(OOPS)):
+            if not recargado and intentar_recargar_oops(page):
+                recargado = True
+                continue
             print(f'  la página de reserva respondió "{OOPS}"')
             break
         page.wait_for_timeout(2500)
@@ -329,18 +382,30 @@ def precio_ida_vuelta(texto, aerolinea):
     con la aerolínea ("Book with Avianca · COP ..."). Las opciones de "Separate tickets" (dos
     tiquetes por aparte) y las de otras aerolíneas (p. ej. Delta, que vende vuelos de LATAM en dólares)
     no cuentan. Devuelve (precio o None, si solo había tiquetes separados)."""
-    if f"for {PASAJEROS} adults" not in texto:  # el precio tiene que ser para todos, no para uno
+    # Verificar que el precio aplique a todos los pasajeros (en inglés o español)
+    valido_pasajeros = bool(
+        re.search(
+            rf"(?:for\s+{PASAJEROS}\s+(?:adults|passengers)|para\s+{PASAJEROS}\s+(?:adultos|pasajeros)|{PASAJEROS}\s+(?:passengers|pasajeros|adultos))",
+            texto,
+            re.I,
+        )
+    )
+    if not valido_pasajeros:
         return None, False
+
     separados = False
-    for opcion in texto.split("Book with ")[1:]:
-        bloque = opcion[:300]
-        if "Separate tickets" in bloque:
+    bloques = re.split(r"(?:Book with |Reservar con |Reservar en )", texto, flags=re.I)[1:]
+    for opcion in bloques:
+        bloque = opcion[:400]
+        if any(sep in bloque for sep in ("Separate tickets", "Billetes separados", "Tiquetes separados")):
             separados = True
             continue
-        if re.match(rf"{re.escape(aerolinea)}\s*Airline", bloque):
-            m = re.search(r"COP\s*([\d,]+)", bloque)
+        if re.match(rf"{re.escape(aerolinea)}\s*(?:Airline|Airlines|Aerolínea|Compañía aérea)?", bloque, re.I):
+            m = re.search(r"COP\s*([\d.,\xa0]+)", bloque)
             if m:
-                return int(m.group(1).replace(",", "")), False
+                limpio = re.sub(r"[.,\s\xa0]", "", m.group(1))
+                if limpio.isdigit():
+                    return int(limpio), False
     return None, separados
 
 
@@ -349,6 +414,7 @@ def link_reserva_google(page, v):
     paso = "abrir la búsqueda"
     try:
         page.goto(v["url"], wait_until="domcontentloaded", timeout=60000)
+        cerrar_consentimiento(page)
         esperar_resultados(page, SEL_VUELO)
         page.wait_for_timeout(2500)
         paso = "elegir la ida"
@@ -356,15 +422,28 @@ def link_reserva_google(page, v):
             f'{SEL_VUELO}[aria-label*="Nonstop flight with {v["aerolinea"]}"][aria-label*="at {v["hora"]}"]'
         ).first.evaluate("e => e.click()", timeout=30000)  # el clic normal lo tapa otro elemento
         paso = "cargar las vueltas"
-        esperar_resultados(page, f'{SEL_VUELO}[aria-label*="Leaves Orlando"]')
+        sel_vueltas = (
+            f'{SEL_VUELO}:is([aria-label*="Leaves Orlando"], [aria-label*="Sale de Orlando"], '
+            f'[aria-label*="Orlando"], [aria-label*="MCO"])'
+        )
+        try:
+            esperar_resultados(page, sel_vueltas)
+        except Exception:
+            esperar_resultados(page, SEL_VUELO)
         page.wait_for_timeout(2500)
         etiquetas = page.eval_on_selector_all(SEL_VUELO, "els => els.map(e => e.getAttribute('aria-label'))")
         regresos = [
             (int(m.group(1).replace(",", "")), i)
             for i, et in enumerate(etiquetas)
             if (m := ETIQUETA.search(et or "")) and m.group("aerolinea") == v["aerolinea"]
-            and "Leaves Orlando" in et
+            and any(loc in (et or "") for loc in ("Leaves Orlando", "Sale de Orlando", "Orlando", "MCO"))
         ]
+        if not regresos:
+            regresos = [
+                (int(m.group(1).replace(",", "")), i)
+                for i, et in enumerate(etiquetas)
+                if (m := ETIQUETA.search(et or "")) and m.group("aerolinea") == v["aerolinea"]
+            ]
         if not regresos:
             return None
         paso = "abrir la página de reserva"
@@ -384,10 +463,14 @@ def capturar(page, nombre):
         return
     try:
         carpeta = Path(CAPTURAS)
-        carpeta.mkdir(exist_ok=True)
+        carpeta.mkdir(exist_ok=True, parents=True)
         base = carpeta / re.sub(r"[^\w-]+", "-", f"{datetime.now():%H%M%S}_{nombre}")
-        page.screenshot(path=f"{base}.png", full_page=True, timeout=15000)
-        Path(f"{base}.txt").write_text(f"{page.url}\n{page.title()}\n\n{page.inner_text('body', timeout=5000)[:8000]}")
+        if hasattr(page, "screenshot"):
+            page.screenshot(path=f"{base}.png", full_page=True, timeout=15000)
+        url = getattr(page, "url", "")
+        title = page.title() if hasattr(page, "title") else ""
+        text = page.inner_text('body', timeout=5000)[:8000] if hasattr(page, "inner_text") else ""
+        Path(f"{base}.txt").write_text(f"{url}\n{title}\n\n{text}")
     except Exception as e:
         print(f"  no se pudo guardar la captura: {type(e).__name__}")
 
@@ -478,11 +561,14 @@ def detalle(vuelos, estado):
 
 
 def correos_atascados():
-    r = subprocess.run(
-        ["osascript", "-e", 'tell application "Mail" to return count of messages of outbox'],
-        capture_output=True, text=True,
-    )
-    return int(r.stdout.strip() or 0)
+    try:
+        r = subprocess.run(
+            ["osascript", "-e", 'tell application "Mail" to return count of messages of outbox'],
+            capture_output=True, text=True, timeout=10,
+        )
+        return int(r.stdout.strip() or 0)
+    except Exception:
+        return 0
 
 
 def enviar_correo(asunto, cuerpo):
@@ -502,7 +588,11 @@ on run argv
     end tell
 end run
 '''
-    subprocess.run(["osascript", "-e", script, asunto, cuerpo, EMAIL_TO], check=True)
+    try:
+        subprocess.run(["osascript", "-e", script, asunto, cuerpo, EMAIL_TO], check=True, timeout=30)
+    except Exception as e:
+        print(f"Error al enviar por Mail: {e}")
+        return False
     for _ in range(12):
         time.sleep(10)
         if not correos_atascados():
@@ -525,12 +615,16 @@ on run argv
     end tell
 end run
 '''
-    r = subprocess.run(
-        ["osascript", "-e", script, titulo, notas, LISTA_RECORDATORIOS], capture_output=True, text=True
-    )
-    if r.returncode != 0:
-        print(f"No se pudo crear el recordatorio: {r.stderr.strip()}")
-    return r.returncode == 0
+    try:
+        r = subprocess.run(
+            ["osascript", "-e", script, titulo, notas, LISTA_RECORDATORIOS], capture_output=True, text=True, timeout=15
+        )
+        if r.returncode != 0:
+            print(f"No se pudo crear el recordatorio: {r.stderr.strip()}")
+        return r.returncode == 0
+    except Exception as e:
+        print(f"No se pudo crear el recordatorio: {e}")
+        return False
 
 
 def texto_recordatorio(vuelos, motivo=None):
@@ -572,38 +666,53 @@ AYUDA_RESERVA = (
 
 def grafica_png(estado):
     """Gráfica del mejor precio total en cada revisión, con la línea de tu tope. PNG o None."""
-    puntos = [(datetime.fromisoformat(r["fecha"]), r["mejor"] / 1e6)
-              for r in estado["revisiones"] if r.get("fecha", "").startswith("20")]
-    if len(puntos) < 2:
-        return None
     try:
+        puntos = []
+        for r in estado.get("revisiones", []):
+            try:
+                if r.get("fecha", "").startswith("20") and r.get("mejor") is not None:
+                    puntos.append((datetime.fromisoformat(r["fecha"]), float(r["mejor"]) / 1e6))
+            except (ValueError, TypeError):
+                continue
+        if len(puntos) < 2:
+            return None
         import io
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.dates as mdates
         import matplotlib.pyplot as plt
-    except ImportError:
+    except (ImportError, Exception):
         return None
-    fig, ax = plt.subplots(figsize=(7, 3), dpi=120)
-    ax.plot([p[0] for p in puntos], [p[1] for p in puntos], color="#1a73e8", linewidth=2, marker="o", markersize=3,
-            label=f'Precio "desde" en la búsqueda (no es el final)')
-    reales = [(datetime.fromisoformat(r["fecha"]), r["real"] / 1e6)
-              for r in estado["revisiones"] if r.get("real") and r.get("fecha", "").startswith("20")]
-    if reales:
-        ax.scatter([p[0] for p in reales], [p[1] for p in reales], color="#e8710a", s=18, zorder=3,
-                   label="Precio real en la aerolínea (cuando se revisó)")
-    ax.axhline(UMBRAL_TOTAL / 1e6, color="#d93025", linestyle="--", linewidth=1.5, label="Tu tope")
-    ax.set_ylabel("Millones COP ida y vuelta")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
-    ax.grid(alpha=0.3)
-    ax.legend(loc="upper left", fontsize=8, frameon=False)
-    for borde in ("top", "right"):
-        ax.spines[borde].set_visible(False)
-    fig.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png")
-    plt.close(fig)
-    return buf.getvalue()
+
+    try:
+        fig, ax = plt.subplots(figsize=(7, 3), dpi=120)
+        ax.plot([p[0] for p in puntos], [p[1] for p in puntos], color="#1a73e8", linewidth=2, marker="o", markersize=3,
+                label=f'Precio "desde" en la búsqueda (no es el final)')
+        reales = []
+        for r in estado.get("revisiones", []):
+            try:
+                if r.get("real") and r.get("fecha", "").startswith("20"):
+                    reales.append((datetime.fromisoformat(r["fecha"]), float(r["real"]) / 1e6))
+            except (ValueError, TypeError):
+                continue
+        if reales:
+            ax.scatter([p[0] for p in reales], [p[1] for p in reales], color="#e8710a", s=18, zorder=3,
+                       label="Precio real en la aerolínea (cuando se revisó)")
+        ax.axhline(UMBRAL_TOTAL / 1e6, color="#d93025", linestyle="--", linewidth=1.5, label="Tu tope")
+        ax.set_ylabel("Millones COP ida y vuelta")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
+        ax.grid(alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8, frameon=False)
+        for borde in ("top", "right"):
+            ax.spines[borde].set_visible(False)
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png")
+        plt.close(fig)
+        return buf.getvalue()
+    except Exception as e:
+        print(f"No se pudo generar la gráfica: {type(e).__name__}: {e}")
+        return None
 
 
 def html_correo(intro, vuelos, con_grafica):
@@ -703,23 +812,54 @@ def avisar(asunto, cuerpo_correo, texto_corto, html=None, png=None):
 
 def abrir_navegador(p):
     # En la nube se usa el Chromium que instala Playwright; en el Mac, tu Google Chrome.
-    browser = p.chromium.launch(channel="chromium" if EN_LA_NUBE else "chrome", headless=True)
+    args = [
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-infobars",
+    ]
+    canal = "chromium" if EN_LA_NUBE else "chrome"
+    try:
+        browser = p.chromium.launch(channel=canal, headless=True, args=args)
+    except Exception:
+        browser = p.chromium.launch(headless=True, args=args)
     return browser, sesion_nueva(browser)
 
 
 def sesion_nueva(browser):
-    """Una página en una sesión nueva del navegador (sin cookies ni historial de búsquedas)."""
-    return browser.new_page(locale="en-US", timezone_id="America/Bogota")
+    """Una página en una sesión nueva del navegador con perfil de usuario real para evitar bloqueos."""
+    page = browser.new_page(
+        locale="en-US",
+        timezone_id="America/Bogota",
+        user_agent=(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+        viewport={"width": 1366, "height": 768},
+        extra_http_headers={
+            "Accept-Language": "en-US,en;q=0.9,es-CO;q=0.8,es;q=0.7",
+        },
+    )
+    if hasattr(page, "add_init_script"):
+        try:
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+        except Exception:
+            pass
+    return page
 
 
 def notificar_mac(titulo, mensaje):
     if EN_LA_NUBE:
         return
-    subprocess.run([
-        "osascript", "-e", "on run argv",
-        "-e", 'display notification (item 2 of argv) with title (item 1 of argv) sound name "Glass"',
-        "-e", "end run", titulo, mensaje,
-    ])
+    try:
+        subprocess.run([
+            "osascript", "-e", "on run argv",
+            "-e", 'display notification (item 2 of argv) with title (item 1 of argv) sound name "Glass"',
+            "-e", "end run", titulo, mensaje,
+        ], timeout=10)
+    except Exception:
+        pass
 
 
 def probar_aviso():

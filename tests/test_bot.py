@@ -273,6 +273,19 @@ class PruebaCorreoYConfig(unittest.TestCase):
             self.skipTest("matplotlib no está instalado")
         self.assertTrue(png.startswith(b"\x89PNG"))
 
+    def test_grafica_ignora_registros_corruptos(self):
+        estado = {
+            "revisiones": [
+                {"fecha": "corrupta", "mejor": "no_es_numero"},
+                {"fecha": "2026-11-01T06:00", "mejor": 9_000_000},
+                {"fecha": "2026-11-02T06:00", "mejor": 9_200_000, "real": "invalido"},
+            ]
+        }
+        png = b.grafica_png(estado)
+        if png is None:
+            self.skipTest("matplotlib no está instalado")
+        self.assertTrue(png.startswith(b"\x89PNG"))
+
 
 
 class PruebaBusqueda(unittest.TestCase):
@@ -441,6 +454,36 @@ class PruebaPaginaDeReserva(unittest.TestCase):
 
     def test_no_confunde_otra_aerolinea(self):
         self.assertEqual(b.precio_ida_vuelta(self.JUNTA, "LATAM"), (None, False))
+
+    def test_lee_reserva_en_espanol(self):
+        texto = (
+            "Opciones para reservar\n"
+            "Reservar con Avianca · Compañía aérea\n"
+            "COP 9.462.200\n"
+            "Continuar\n"
+            "Los precios incluyen tasas e impuestos obligatorios para 4 adultos."
+        )
+        self.assertEqual(b.precio_ida_vuelta(texto, "Avianca"), (9_462_200, False))
+
+    def test_lee_reserva_con_4_pasajeros_en_espanol(self):
+        texto = (
+            "4 pasajeros\n"
+            "COP 9.256.091\n"
+            "Reservar con LATAM · Compañía aérea\n"
+            "COP 9.461.400\n"
+            "Continuar"
+        )
+        self.assertEqual(b.precio_ida_vuelta(texto, "LATAM"), (9_461_400, False))
+
+    def test_detecta_tiquetes_separados_en_espanol(self):
+        texto = (
+            "Opciones para reservar\n"
+            "Reservar con Avianca\n"
+            "Billetes separados\n"
+            "COP 8.100.000\n"
+            "para 4 adultos"
+        )
+        self.assertEqual(b.precio_ida_vuelta(texto, "Avianca"), (None, True))
 
 
 class PruebaSegundaLectura(unittest.TestCase):
