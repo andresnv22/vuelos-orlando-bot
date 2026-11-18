@@ -50,7 +50,7 @@ AEROLINEAS = CONFIG["aerolineas"]
 UMBRAL_TOTAL = CONFIG["umbral_total_cop"]  # COP ida y vuelta para todos: avisa si el precio queda por debajo
 MARGEN_DESDE = 1.05  # el "desde" a veces sale un poco más alto que el real: también se revisan esas fechas
 HORAS_REVISION = (6, 9, 12, 15, 18, 21)
-GRACIA_REVISION_OMITIDA = timedelta(minutes=90)
+PRESUPUESTO_REVISION = 25 * 60  # deja tiempo para avisar y guardar el historial
 # ------------------------------------------------
 
 # Primero tus fechas, después las cercanas.
@@ -96,12 +96,7 @@ def guardar_estado(estado):
 
 
 def revisiones_omitidas(estado, ahora):
-    """Franjas que ya deberían haberse revisado, pero quedaron después de la última revisión.
-
-    La alerta se activa solo al pasar 90 minutos de la hora esperada. Eso permite que GitHub
-    llegue tarde sin generar falsos positivos, pero detecta una franja de tres horas que se
-    perdió por completo cuando el bot vuelva a ejecutarse.
-    """
+    """Detecta franjas cerradas sin registro, excluyendo las ya notificadas."""
     fechas = []
     for revision in estado.get("revisiones", []):
         try:
@@ -111,14 +106,16 @@ def revisiones_omitidas(estado, ahora):
     if not fechas:
         return []  # La primera revisión no tiene una referencia contra la cual medir un salto.
     ultima = max(fechas)
-    limite = ahora - GRACIA_REVISION_OMITIDA
+    ultima_notificada = estado.get("ultima_omision_notificada") or ""
     omitidas = []
     dia = ultima.date()
-    while dia <= limite.date():
+    while dia <= ahora.date():
         for hora in HORAS_REVISION:
             esperada = datetime.combine(dia, datetime.min.time()).replace(hour=hora)
-            if ultima < esperada <= limite:
-                omitidas.append(esperada.isoformat(timespec="minutes"))
+            fin = esperada.replace(hour=23) if hora == 21 else esperada + timedelta(hours=3)
+            marca = esperada.isoformat(timespec="minutes")
+            if ultima < esperada and fin <= ahora and marca > ultima_notificada:
+                omitidas.append(marca)
         dia += timedelta(days=1)
     return omitidas
 
@@ -372,7 +369,7 @@ def opciones_para_reservar(vuelos):
     return elegidos
 
 
-def verificar_precios(page, vuelos):
+def verificar_precios(page, vuelos, plazo):
     """Confirma ambas aerolíneas de cada fecha candidata y devuelve lo que se revisó.
 
     No termina al encontrar la primera tarifa bajo el tope: la segunda aerolínea o una fecha
@@ -381,10 +378,13 @@ def verificar_precios(page, vuelos):
     """
     candidatos = candidatos_verificacion(vuelos)
     for v in candidatos:
+        if time.monotonic() >= plazo:
+            break
         completar_reserva(page, v)
         real = (cop(v["precio_real"]) if v.get("precio_real")
                 else "solo tiquetes separados (no cuenta)" if v.get("solo_separados") else "no se pudo leer")
         print(f"  {v['aerolinea']} {v['salida']} → {v['regreso']}: desde {cop(v['total'])}, real {real}")
+        confirmar_bajo_tope(page, [v])
     return candidatos
 
 
@@ -420,7 +420,7 @@ def leer_precio(page, v):
     recargado = False
     for _ in range(12):  # los precios de la aerolínea tardan unos segundos en cargar
         cerrar_consentimiento(page)
-        precio, separados = precio_ida_vuelta(page.inner_text("body"), v["aerolinea"])
+        precio, separados = precio_ida_vuelta(page.inner_text("body", timeout=5000), v["aerolinea"])
         if precio:
             return precio, False
         if hay_visible(page, page.get_by_text(OOPS)):
@@ -463,7 +463,7 @@ def confirmar_bajo_tope(page, vuelos):
     segunda lectura (la más reciente). Si no se pudo leer otra vez, la opción queda sin confirmar y no se
     presenta como precio real."""
     for v in vuelos:
-        if v.get("precio_real") and motivo_umbral(v["precio_real"]):
+        if v.get("precio_real") and not v.get("confirmado") and motivo_umbral(v["precio_real"]):
             primero = v["precio_real"]
             v["precio_real"] = confirmar_precio(page, v)
             v["sin_confirmar"] = v["precio_real"] is None
@@ -514,7 +514,7 @@ def link_reserva_google(page, v):
         page.wait_for_timeout(2500)
         paso = "elegir la ida"
         loc_ida = page.locator(
-            f'{SEL_VUELO}[aria-label*="Nonstop flight with {v["aerolinea"]}"][aria-label*="at {v["hora"]}"]'
+            f':is({SEL_VUELO})[aria-label*="Nonstop flight with {v["aerolinea"]}"][aria-label*="at {v["hora"]}"]'
         ).first
         try:
             loc_ida.click(force=True, timeout=30000)
@@ -522,27 +522,18 @@ def link_reserva_google(page, v):
             loc_ida.evaluate("e => e.click()", timeout=30000)
         paso = "cargar las vueltas"
         sel_vueltas = (
-            f'{SEL_VUELO}:is([aria-label*="Leaves Orlando"], [aria-label*="Sale de Orlando"], '
-            f'[aria-label*="Orlando"], [aria-label*="MCO"])'
+            f':is({SEL_VUELO}):is([aria-label*="Leaves Orlando"], [aria-label*="Sale de Orlando"], '
+            f'[aria-label*="Leaves MCO"])'
         )
-        try:
-            esperar_resultados(page, sel_vueltas)
-        except Exception:
-            esperar_resultados(page, SEL_VUELO)
+        esperar_resultados(page, sel_vueltas)
         page.wait_for_timeout(2500)
         etiquetas = page.eval_on_selector_all(SEL_VUELO, "els => els.map(e => e.getAttribute('aria-label'))")
         regresos = [
             (int(m.group(1).replace(",", "")), i)
             for i, et in enumerate(etiquetas)
             if (m := ETIQUETA.search(et or "")) and m.group("aerolinea") == v["aerolinea"]
-            and any(loc in (et or "") for loc in ("Leaves Orlando", "Sale de Orlando", "Orlando", "MCO"))
+            and any(loc in (et or "") for loc in ("Leaves Orlando", "Sale de Orlando", "Leaves MCO"))
         ]
-        if not regresos:
-            regresos = [
-                (int(m.group(1).replace(",", "")), i)
-                for i, et in enumerate(etiquetas)
-                if (m := ETIQUETA.search(et or "")) and m.group("aerolinea") == v["aerolinea"]
-            ]
         if not regresos:
             return None
         paso = "abrir la página de reserva"
@@ -1043,11 +1034,16 @@ def main():
     estado["revisiones_omitidas_pendientes"] = sorted(omitidas)
 
     print(f"\n=== Revisión {ahora:%d/%m/%Y %H:%M} ===")
+    plazo = time.monotonic() + PRESUPUESTO_REVISION
+    fechas_sin_resultado = []
     vuelos, bloqueado = [], False
     with sync_playwright() as p:
         browser, page = abrir_navegador(p)
         for salida, regreso in COMBINACIONES:
             if salida <= ahora.date():
+                continue
+            if bloqueado or time.monotonic() >= plazo:
+                fechas_sin_resultado.append((salida, regreso))
                 continue
             try:
                 encontrados, _, bloqueado = buscar(page, salida, regreso)
@@ -1057,9 +1053,10 @@ def main():
                     encontrados, _, bloqueado = buscar(page, salida, regreso)
             except Exception as e:  # una fecha que falla no tumba toda la revisión
                 print(f"{salida} → {regreso}: error {type(e).__name__}")
+                fechas_sin_resultado.append((salida, regreso))
                 continue
-            if bloqueado:
-                break
+            if not encontrados:
+                fechas_sin_resultado.append((salida, regreso))
             print(f"{salida} → {regreso}: {len(encontrados)} vuelos")
             vuelos += encontrados
             page.wait_for_timeout(random.randint(2000, 6000))  # ir despacio
@@ -1067,6 +1064,7 @@ def main():
         resumen = False
         motivo = precio_alerta = None
         sin_confirmar = []
+        candidatos = []
         if vuelos:
             vuelos.sort(key=lambda v: v["total"])
             mejor = vuelos[0]
@@ -1077,22 +1075,22 @@ def main():
             # del tope, no hace falta abrir las páginas de reserva.
             hay_candidatos = vale_revisar(mejor["total"])
             if hay_candidatos:
-                verificar_precios(page, vuelos)
+                candidatos = verificar_precios(page, vuelos, plazo)
             if hay_candidatos or resumen:
                 for v in opciones_para_reservar(vuelos):  # links de lo que se va a mostrar
-                    if "reserva" not in v:
+                    if "reserva" not in v and time.monotonic() < plazo:
                         completar_reserva(page, v)
+                        confirmar_bajo_tope(page, [v])
             # Solo cuenta el precio real de la aerolínea, ida y vuelta en una sola reserva. Cada opción
             # se juzga con su propio precio, y un "desde" sin confirmar nunca se presenta como bueno.
             revisados = [v for v in vuelos if "reserva" in v]
-            confirmar_bajo_tope(page, revisados)  # un precio bajo el tope se lee dos veces antes de avisar
-            bajo_tope = [v["precio_real"] for v in revisados if v.get("precio_real") and motivo_umbral(v["precio_real"])]
+            bajo_tope = [v["precio_real"] for v in revisados
+                         if v.get("confirmado") and motivo_umbral(v["precio_real"])]
             if bajo_tope:
                 precio_alerta = min(bajo_tope)
                 motivo = motivo_umbral(precio_alerta)
-            else:
-                sin_confirmar = [v["total"] for v in revisados if not v.get("precio_real")
-                                 and not v.get("solo_separados") and (motivo_umbral(v["total"]) or v.get("sin_confirmar"))]
+            sin_confirmar = [v["total"] for v in candidatos if not v.get("precio_real")
+                             and not v.get("solo_separados")]
         browser.close()
 
     # Cada aviso lleva los cambios de estado que solo se guardan si de verdad sale,
@@ -1108,7 +1106,7 @@ def main():
             "⚠️ Bot vuelos BOG→MCO: se saltó una revisión",
             texto,
             texto,
-            {"revisiones_omitidas_pendientes": []},
+            {"revisiones_omitidas_pendientes": [], "ultima_omision_notificada": max(omitidas)},
             None,
         ))
     if not vuelos:
@@ -1120,26 +1118,28 @@ def main():
             avisos.append(("⚠️ Bot vuelos BOG→MCO: no se pudo revisar", texto, texto, {"ultimo_aviso_error": hoy}, None))
     else:
         mejor, cuerpo = detalle(vuelos, estado)
+        parcial = ""
+        if fechas_sin_resultado or sin_confirmar:
+            parcial = (f"Revisión parcial: {len(fechas_sin_resultado)} pares de fechas sin resultados "
+                       f"y {len(sin_confirmar)} opciones de reserva sin confirmar.")
         # La hora en el asunto hace que cada aviso llegue como correo nuevo y no escondido en el anterior.
         cuando = f"{fecha_corta(hoy)}, {ahora.hour % 12 or 12}:{ahora:%M} {'am' if ahora.hour < 12 else 'pm'}"
         if precio_alerta:
             # Se avisa en cada revisión (cada 3 horas) mientras el precio real siga bajo el tope.
             avisos.append((
                 f"🔥 ¡Precio bueno! BOG→MCO directo {cop(precio_alerta)} COP (4 personas) · {cuando}",
-                f"Por qué te aviso: {motivo}.\n\n{cuerpo}",
-                texto_recordatorio(vuelos, motivo),
+                f"Por qué te aviso: {motivo}.\n{parcial}\n\n{cuerpo}",
+                texto_recordatorio(vuelos, motivo) + (f"\n{parcial}" if parcial else ""),
                 {"bajo_tope": True},
-                f"🔥 Por qué te aviso: {motivo}.",
+                f"🔥 Por qué te aviso: {motivo}.\n{parcial}".strip(),
             ))
-        elif sin_confirmar:
+        elif parcial:
             # La página de la aerolínea no mostró el precio: no se sabe si está bajo el tope, y el
             # "desde" no sirve para decidir (suele salir bastante más bajo que el real).
-            print(f"No se pudo confirmar el precio real (desde {cop(min(sin_confirmar))})")
+            print(parcial)
             if estado["ultimo_aviso_error"] != hoy:  # un solo aviso de este tipo por día
                 intro = (
-                    "No pude leer (o confirmar con una segunda lectura) el precio real en la página de la aerolínea, "
-                    f"así que no sé si hay algo bajo tu tope de {cop(UMBRAL_TOTAL)}. En la búsqueda sale desde "
-                    f"{cop(min(sin_confirmar))}, que no es el precio final. Lo vuelvo a intentar en la próxima revisión."
+                    f"{parcial} Lo vuelvo a intentar en la próxima revisión."
                 )
                 avisos.append((
                     "⚠️ Bot vuelos BOG→MCO: no pude confirmar el precio real",
@@ -1180,6 +1180,8 @@ def main():
                 intro.strip(),
             ))
         revision = {"fecha": ahora.isoformat(timespec="minutes"), "mejor": mejor["total"]}
+        if parcial:
+            revision["parcial"] = True
         if mejor_real(vuelos):  # el precio real solo se conoce cuando se abrió la página de reserva
             revision["real"] = mejor_real(vuelos)["precio_real"]
         estado["revisiones"].append(revision)

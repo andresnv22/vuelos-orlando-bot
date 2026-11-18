@@ -47,7 +47,8 @@ class PruebaAlertas(unittest.TestCase):
         self.enviados = []
         self.originales = {n: getattr(b, n) for n in
                            ("sync_playwright", "abrir_navegador", "buscar", "completar_reserva", "avisar", "ESTADO",
-                            "datetime", "confirmar_precio")}
+                            "datetime", "confirmar_precio", "COMBINACIONES")}
+        b.COMBINACIONES = [b.FECHAS_IDEALES]
         # Reloj fijo para que el resultado no dependa del día en que se corren las pruebas:
         # a las 10am no toca el resumen del día (sale desde la revisión de las 6pm).
         self.ahora = datetime(2026, 11, 3, 10, 0)
@@ -165,7 +166,8 @@ class PruebaAlertas(unittest.TestCase):
         self.assertIn("no pude confirmar", avisos[0])  # no se descarta en silencio
 
     def test_revisa_otras_fechas_si_la_mas_barata_sale_cara_en_la_aerolinea(self):
-        otras = next(c for c in b.COMBINACIONES if c != b.FECHAS_IDEALES)
+        otras = next(c for c in self.originales["COMBINACIONES"] if c != b.FECHAS_IDEALES)
+        b.COMBINACIONES.append(otras)
 
         def vuelo(fechas, aerolinea, total):
             s, r = fechas
@@ -324,14 +326,19 @@ class PruebaCorreoYConfig(unittest.TestCase):
 
 
 class PruebaVigilancia(unittest.TestCase):
-    def test_detecta_una_franja_omitida_despues_de_la_gracia(self):
+    def test_detecta_una_franja_omitida_al_cerrar(self):
         estado = {"revisiones": [{"fecha": "2026-11-03T06:02", "mejor": 9_000_000}]}
-        omitidas = b.revisiones_omitidas(estado, datetime(2026, 11, 3, 11, 0))
+        omitidas = b.revisiones_omitidas(estado, datetime(2026, 11, 3, 12, 0))
         self.assertEqual(omitidas, ["2026-11-03T09:00"])
 
     def test_no_marca_como_omitida_una_revision_que_aun_puede_llegar_tarde(self):
         estado = {"revisiones": [{"fecha": "2026-11-03T06:02", "mejor": 9_000_000}]}
-        self.assertEqual(b.revisiones_omitidas(estado, datetime(2026, 11, 3, 10, 20)), [])
+        self.assertEqual(b.revisiones_omitidas(estado, datetime(2026, 11, 3, 11, 58)), [])
+
+    def test_no_repite_omision_si_sigue_sin_haber_resultados(self):
+        estado = {"revisiones": [{"fecha": "2026-11-03T06:02"}],
+                  "ultima_omision_notificada": "2026-11-03T09:00"}
+        self.assertEqual(b.revisiones_omitidas(estado, datetime(2026, 11, 3, 12, 10)), [])
 
 
 
@@ -373,7 +380,7 @@ class PruebaBusqueda(unittest.TestCase):
             def eval_on_selector_all(self, *a):
                 return etiquetas
 
-            def inner_text(self, selector):
+            def inner_text(self, selector, **kwargs):
                 return ""
 
         vuelos, _, _ = b.buscar(Pagina(), *b.FECHAS_IDEALES)
@@ -425,7 +432,7 @@ class PruebaErrorDeGoogle(unittest.TestCase):
             def close(self):
                 self.cerrada = True
 
-            def inner_text(self, selector):
+            def inner_text(self, selector, **kwargs):
                 return PruebaPaginaDeReserva.JUNTA
 
         principal = Pagina()
@@ -452,7 +459,7 @@ class PruebaErrorDeGoogle(unittest.TestCase):
             def get_by_text(self, texto):  # la primera página de reserva respondió "Oops"
                 return _Visibles(not abiertas)
 
-            def inner_text(self, selector):
+            def inner_text(self, selector, **kwargs):
                 return PruebaPaginaDeReserva.JUNTA if abiertas else "Oops, something went wrong"
 
         try:
@@ -541,7 +548,7 @@ class PruebaSegundaLectura(unittest.TestCase):
             def goto(self, url, **k):
                 abiertas.append((self, url))
 
-            def inner_text(self, selector):
+            def inner_text(self, selector, **kwargs):
                 return PruebaPaginaDeReserva.JUNTA
 
         principal = Pagina()

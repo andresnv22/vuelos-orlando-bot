@@ -36,7 +36,7 @@ que ningún computador esté prendido.
 | ⬆️ **Subió el precio** | Una sola vez, cuando venía avisando y el precio real ya no está bajo el tope. Después no llega nada hasta que vuelva a bajar. |
 | ✈️ **Resumen del día** | A las 6pm, si ese día no salió otro aviso: el precio real más barato del día, para saber que el bot sigue vivo aunque el precio esté sobre el tope. |
 | ⚠️ **No se pudo revisar** / **no pude confirmar el precio real** | Google no devolvió resultados, o la página de la aerolínea no mostró el precio de una opción que en la búsqueda sale bajo el tope (máximo uno al día). |
-| ⚠️ **Se saltó una revisión** / **falló una revisión** | Si pasa más de 90 minutos desde una franja programada sin registro, la siguiente ejecución lo avisa. Si el workflow falla antes de terminar (incluida la instalación), GitHub manda una alerta por Gmail inmediatamente. |
+| ⚠️ **Se saltó una revisión** / **falló una revisión** | Si una franja termina sin registro, la siguiente ejecución lo avisa. Si el workflow falla, intenta avisar por Gmail. Si solo pudo revisar parte de la búsqueda, el aviso indica cuántas fechas u opciones quedaron pendientes. |
 
 Si un correo no se puede enviar, la corrida queda en rojo y GitHub avisa por correo a la cuenta del repositorio.
 
@@ -64,7 +64,7 @@ En **Settings → Secrets and variables → Actions**:
 |---|---|
 | `GMAIL_USER` | Cuenta de Gmail que envía los correos. |
 | `GMAIL_APP_PASSWORD` | [Contraseña de aplicación](https://myaccount.google.com/apppasswords) de **esa misma** cuenta (16 letras). |
-| `EMAIL_TO` | *Opcional.* A dónde llegan los avisos; si no existe, llegan a `GMAIL_USER`. |
+| `EMAIL_TO` | *Opcional.* Destinatario de los avisos de precios y fallos. |
 
 ## Probar a mano
 

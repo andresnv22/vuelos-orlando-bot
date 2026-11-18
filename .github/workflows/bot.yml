@@ -29,7 +29,7 @@ concurrency:
 jobs:
   revisar:
     runs-on: ubuntu-24.04  # fija: el 11/11 ubuntu-latest pasó a 26.04 y Playwright no instala Chromium ahí
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v6
         with:
@@ -45,7 +45,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os
-          from datetime import datetime, timedelta
+          from datetime import datetime
           ahora = datetime.now()
           revisiones = json.load(open("estado.json")).get("revisiones", [])
           ultima = datetime.fromisoformat(revisiones[-1]["fecha"]) if revisiones else None
@@ -54,10 +54,8 @@ jobs:
           if os.environ["EVENTO"] == "workflow_dispatch" and os.environ["MODO"] != "auto":
               si = True  # corrida lanzada a mano
           else:
-              # Una revisión por franja (antes era "2h40 desde la última", y una revisión a mano a la 1pm hacía
-              # saltar la de las 3pm). La hora mínima entre revisiones evita dos seguidas en el cambio de franja.
-              si = 6 <= ahora.hour <= 22 and (ultima is None or (
-                  franja(ahora) != franja(ultima) and ahora - ultima >= timedelta(minutes=45)))
+              # Si la anterior arrancó tarde, no debe impedir la revisión de la franja actual.
+              si = 6 <= ahora.hour <= 22 and (ultima is None or franja(ahora) != franja(ultima))
           print(f"Ahora {ahora:%d/%m %H:%M}, última revisión {ultima:%d/%m %H:%M}" if ultima else "Sin revisiones")
           print("Toca revisar" if si else "Todavía no toca; se espera a la próxima")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
@@ -83,6 +81,7 @@ jobs:
 
       - name: Revisar precios
         if: steps.toca.outputs.si == 'true'
+        timeout-minutes: 40
         env:
           AVISAR_POR: gmail
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
