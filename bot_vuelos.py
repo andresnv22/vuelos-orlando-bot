@@ -125,6 +125,7 @@ ETIQUETA = re.compile(
     r"\s*Nonstop flight with (?P<aerolinea>.+?)\."
     r"(?: Operated by (?P<opera>.+?)\.)?"
     r" Leaves .+? at (?P<hora>\d{1,2}:\d{2}\s?[AP]M)"
+    r"(?:(?: on [^.]*?)? and arrives at .+? at (?P<llegada>\d{1,2}:\d{2}\s?[AP]M))?"
 )
 INSIGHT = re.compile(r"Prices are currently (low|typical|high)")
 INSIGHT_ES = {"low": "bajos", "typical": "normales", "high": "altos"}
@@ -293,6 +294,10 @@ def buscar(page, salida, regreso):
             "noches": (regreso - salida).days,
             "aerolinea": aerolinea,
             "hora": m.group("hora"),
+            "hora_salida": m.group("hora"),
+            "llegada_salida": m.group("llegada") if "llegada" in m.groupdict() else None,
+            "hora_regreso": None,
+            "llegada_regreso": None,
             "total": int(m.group(1).replace(",", "")),
             "basica": bool(m.group("basica")),
             "insight": insight,
@@ -383,7 +388,8 @@ def verificar_precios(page, vuelos, plazo):
         completar_reserva(page, v)
         real = (cop(v["precio_real"]) if v.get("precio_real")
                 else "solo tiquetes separados (no cuenta)" if v.get("solo_separados") else "no se pudo leer")
-        print(f"  {v['aerolinea']} {v['salida']} → {v['regreso']}: desde {cop(v['total'])}, real {real}")
+        vuelta_txt = f", vuelta {v['hora_regreso']}" if v.get("hora_regreso") else ""
+        print(f"  {v['aerolinea']} {v['salida']} ({v['hora']}) → {v['regreso']}{vuelta_txt}: desde {cop(v['total'])}, real {real}")
         confirmar_bajo_tope(page, [v])
     return candidatos
 
@@ -393,6 +399,8 @@ def completar_reserva(page, v):
     <aerolínea>" que lleva a su web oficial) y el precio real que da la aerolínea ahí.
     Cada intento va en una sesión nueva: en la de la búsqueda, esa misma búsqueda ya se abrió."""
     v.update(reserva=None, precio_real=None, solo_separados=False, confirmado=False)
+    v.setdefault("hora_regreso", None)
+    v.setdefault("llegada_regreso", None)
     for intento in range(3):  # Google a veces responde "Oops" aun en sesión nueva; al reintentar casi siempre sale
         if intento:
             page.wait_for_timeout(3000 * intento)
@@ -529,15 +537,19 @@ def link_reserva_google(page, v):
         page.wait_for_timeout(2500)
         etiquetas = page.eval_on_selector_all(SEL_VUELO, "els => els.map(e => e.getAttribute('aria-label'))")
         regresos = [
-            (int(m.group(1).replace(",", "")), i)
+            (int(m.group(1).replace(",", "")), i, m)
             for i, et in enumerate(etiquetas)
             if (m := ETIQUETA.search(et or "")) and m.group("aerolinea") == v["aerolinea"]
             and any(loc in (et or "") for loc in ("Leaves Orlando", "Sale de Orlando", "Leaves MCO"))
         ]
         if not regresos:
             return None
+        mejor_vuelta = min(regresos, key=lambda r: r[0])
+        v["hora_regreso"] = mejor_vuelta[2].group("hora")
+        if "llegada" in mejor_vuelta[2].groupdict() and mejor_vuelta[2].group("llegada"):
+            v["llegada_regreso"] = mejor_vuelta[2].group("llegada")
         paso = "abrir la página de reserva"
-        loc_vuelta = page.locator(SEL_VUELO).nth(min(regresos)[1])
+        loc_vuelta = page.locator(SEL_VUELO).nth(mejor_vuelta[1])
         try:
             loc_vuelta.click(force=True, timeout=30000)
         except Exception:
@@ -596,17 +608,21 @@ def detalle(vuelos, estado):
     ]
     real = mejor_real(vuelos)
     if real:
+        h_ida = real.get("hora_salida") or real.get("hora") or ""
+        h_reg = f" {real['hora_regreso']}" if real.get("hora_regreso") else ""
         lineas += [
             f"MEJOR PRECIO REAL: {cop(real['precio_real'])} COP en total ({cop(real['precio_real'] // PASAJEROS)} "
             f"por persona), ida y vuelta en una sola reserva con {real['aerolinea']}",
-            f"  sale {fecha_corta(real['salida'])} {real['hora']} · regresa {fecha_corta(real['regreso'])} · "
+            f"  sale {fecha_corta(real['salida'])} {h_ida} · regresa {fecha_corta(real['regreso'])}{h_reg} · "
             f"{real['noches']} noches",
             "",
         ]
+    m_ida = mejor.get("hora_salida") or mejor.get("hora") or ""
+    m_reg = f" {mejor['hora_regreso']}" if mejor.get("hora_regreso") else ""
     lineas += [
         f"Más barato en la búsqueda (\"desde\", no es el precio final): {cop(mejor['total'])} COP en total",
-        f"  {mejor['aerolinea']} · sale {fecha_corta(mejor['salida'])} {mejor['hora']} · "
-        f"regresa {fecha_corta(mejor['regreso'])} · {mejor['noches']} noches"
+        f"  {mejor['aerolinea']} · sale {fecha_corta(mejor['salida'])} {m_ida} · "
+        f"regresa {fecha_corta(mejor['regreso'])}{m_reg} · {mejor['noches']} noches"
         + (" · tarifa básica, sin maleta de mano" if mejor["basica"] else ""),
     ]
     if mejor["insight"]:
@@ -619,17 +635,21 @@ def detalle(vuelos, estado):
     lineas += ["", "TOP 10 OPCIONES", "-" * 60]
     for i, v in enumerate(vuelos[:10], 1):
         nota = " (básica, sin maleta de mano)" if v["basica"] else ""
+        v_ida = v.get("hora_salida") or v.get("hora") or ""
+        v_reg = f" · vuelta {v['hora_regreso']}" if v.get("hora_regreso") else ""
         lineas.append(
             f"{i:>2}. {cop(v['total'])} · {v['aerolinea']} · "
             f"{fecha_corta(v['salida'])} → {fecha_corta(v['regreso'])} "
-            f"({v['noches']} noches) · sale {v['hora']}{nota}"
+            f"({v['noches']} noches) · sale {v_ida}{v_reg}{nota}"
         )
 
     lineas += ["", "RESERVAR YA (web oficial de la aerolínea)", "-" * 60]
     for i, v in enumerate(opciones_para_reservar(vuelos), 1):
+        v_ida = v.get("hora_salida") or v.get("hora") or ""
+        v_horario = f"ida {v_ida} · vuelta {v['hora_regreso']}" if v.get("hora_regreso") else f"sale {v_ida}"
         lineas.append(
             f"{i}. {v['aerolinea']} · {fecha_corta(v['salida'])} → {fecha_corta(v['regreso'])} · "
-            f"sale {v['hora']} · {cop(v['total'])}"
+            f"{v_horario} · {cop(v['total'])}"
         )
         if v.get("precio_real"):
             lineas.append(
@@ -732,10 +752,12 @@ def texto_recordatorio(vuelos, motivo=None):
     for i, v in enumerate(opciones, 1):
         precio = v.get("precio_real") or v["total"]
         etiqueta = "precio real" if v.get("precio_real") else "desde"
+        hora_ida = v.get("hora_salida") or v.get("hora") or ""
+        horario = f"ida {hora_ida} · vuelta {v['hora_regreso']}" if v.get("hora_regreso") else f"sale {hora_ida}"
         lineas += [
             f"{i}. {'⭐ TUS FECHAS · ' if es_ideal(v) else ''}{v['aerolinea']} · "
             f"{fecha_corta(v['salida'])} → {fecha_corta(v['regreso'])} "
-            f"({v['noches']} noches) · sale {v['hora']}",
+            f"({v['noches']} noches) · {horario}",
             f"   {cop(precio)} ida y vuelta para los {PASAJEROS} ({etiqueta}) · {cop(precio // PASAJEROS)} c/u",
             *([f"   Ida y vuelta en una sola reserva con {v['aerolinea']} (no son tiquetes separados)"]
               if v.get("precio_real") else []),
@@ -836,10 +858,21 @@ def html_correo(intro, vuelos, con_grafica):
                          if v.get("precio_real") else
                          '<div style="color:#6b7280;font-size:12px;line-height:18px;margin-top:12px">'
                          'El bot encontró este precio inicial, pero no logró confirmarlo aún en la aerolínea.</div>')
+        hora_ida = v.get("hora_salida") or v.get("hora") or ""
+        llegada_ida = f" (llega {escape(v['llegada_salida'])})" if v.get("llegada_salida") else ""
+        if v.get("hora_regreso"):
+            llegada_vuelta = f" (llega {escape(v['llegada_regreso'])})" if v.get("llegada_regreso") else ""
+            vuelta_html = f"<b>Vuelta:</b> sale {escape(v['hora_regreso'])}{llegada_vuelta}"
+        else:
+            vuelta_html = "<b>Vuelta:</b> horario a elegir en la aerolínea"
         filas += f"""
         <div style="border:1px solid {borde};border-radius:14px;background:{fondo};padding:18px 16px;margin:0 0 14px">
           {estrella}<b style="font-size:15px">{escape(v['aerolinea'])}</b>
-          <div style="color:#4b5563;font-size:14px;line-height:21px;margin:5px 0 14px">{fecha_corta(v['salida'])} <span style="color:#8b95a1">→</span> {fecha_corta(v['regreso'])}<br>{v['noches']} noches · salida {escape(v['hora'])}</div>
+          <div style="color:#4b5563;font-size:14px;line-height:21px;margin:5px 0 14px">
+            {fecha_corta(v['salida'])} <span style="color:#8b95a1">→</span> {fecha_corta(v['regreso'])} · {v['noches']} noches<br>
+            <b>Ida:</b> sale {escape(hora_ida)}{llegada_ida}<br>
+            {vuelta_html}
+          </div>
           <div style="display:inline-block;background:#eaf8f0;color:#087f4e;border-radius:999px;padding:4px 8px;font-size:10px;font-weight:bold;letter-spacing:.4px">{estado}</div>
           <div style="font-size:25px;line-height:32px;color:{color_precio};font-weight:bold;margin:7px 0 2px">{cop(precio)} <span style="font-size:12px;font-weight:normal;color:#4b5563">COP</span></div>
           <div style="color:#4b5563;font-size:13px;line-height:20px;margin-bottom:14px">Ida y vuelta para {PASAJEROS} personas · {cop(precio // PASAJEROS)} por persona<br><span style="color:#6b7280">{etiqueta}</span></div>
@@ -852,8 +885,9 @@ def html_correo(intro, vuelos, con_grafica):
         key=lambda v: (v["salida"], v["regreso"], v["aerolinea"]),
     )
     combos = "".join(
-        f"<tr style='border-bottom:1px solid #edf0f3'><td style='padding:8px 6px'>{'⭐ ' if es_ideal(v) else ''}{fecha_corta(v['salida'])} → {fecha_corta(v['regreso'])}<br><span style='font-size:11px;color:#6b7280'>{v['noches']} noches · {escape(v['aerolinea'])}</span></td>"
-        f"<td style='padding:8px 6px;text-align:right;font-weight:bold'>{cop(v['total'])}</td></tr>"
+        f"<tr style='border-bottom:1px solid #edf0f3'><td style='padding:8px 6px'>{'⭐ ' if es_ideal(v) else ''}{fecha_corta(v['salida'])} → {fecha_corta(v['regreso'])}<br><span style='font-size:11px;color:#6b7280'>{v['noches']} noches · {escape(v['aerolinea'])}"
+        + (f" · ida {escape(v['hora'])}, vuelta {escape(v['hora_regreso'])}" if v.get("hora_regreso") else f" · salida {escape(v.get('hora', ''))}")
+        + f"</span></td><td style='padding:8px 6px;text-align:right;font-weight:bold'>{cop(v['total'])}</td></tr>"
         for v in comparacion
     )
     grafica = ('<div style="margin:24px 0 0;padding:18px 16px;background:#f7f9fc;border-radius:12px">'

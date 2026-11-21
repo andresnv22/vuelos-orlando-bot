@@ -34,7 +34,8 @@ with sync_playwright() as p:
         segundos = time.time() - inicio
         real = b.cop(v["precio_real"]) if v["precio_real"] else "sin precio"
         segunda = b.confirmar_precio(page, v) if v["precio_real"] else None
-        print(f"{salida} → {regreso} {v['aerolinea']} {v['hora']}: desde {b.cop(v['total'])}, "
+        vuelta_txt = f", vuelta {v['hora_regreso']}" if v.get("hora_regreso") else ""
+        print(f"{salida} → {regreso} {v['aerolinea']} {v['hora']}{vuelta_txt}: desde {b.cop(v['total'])}, "
               f"real {real}, segunda lectura {b.cop(segunda) if segunda else 'sin precio'}, {segundos:.0f} s")
         resultados.append(bool(v["precio_real"]))
         iguales.append(bool(segunda) and segunda == v["precio_real"])

@@ -580,5 +580,147 @@ class PruebaTope(unittest.TestCase):
         self.assertEqual(b.UMBRAL_TOTAL, 10_000_000)
 
 
+class PruebaHorarios(unittest.TestCase):
+    def test_etiqueta_extrae_hora_salida_y_llegada(self):
+        texto = (
+            "From 9,483,920 Colombian pesos round trip total. Nonstop flight with Avianca. "
+            "Leaves El Dorado International Airport at 8:20 AM on Tuesday, December 22 and "
+            "arrives at Orlando International Airport at 12:35 PM on Tuesday, December 22. Total duration 4 hr 15 min."
+        )
+        m = b.ETIQUETA.search(texto)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group("hora"), "8:20 AM")
+        self.assertEqual(m.group("llegada"), "12:35 PM")
+
+    def test_etiqueta_sin_llegada_sigue_extrayendo_salida(self):
+        texto = (
+            "From 9517440 Colombian pesos round trip total. Nonstop flight with LATAM. "
+            "Leaves El Dorado International Airport at 10:35 AM on Wednesday"
+        )
+        m = b.ETIQUETA.search(texto)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group("hora"), "10:35 AM")
+        self.assertIsNone(m.group("llegada"))
+
+    def test_link_reserva_captura_hora_y_llegada_de_regreso(self):
+        v = {
+            "aerolinea": "Avianca",
+            "salida": "2026-12-22",
+            "regreso": "2026-12-27",
+            "hora": "8:20 AM",
+            "url": "https://google.com/travel/flights/search",
+        }
+        etiquetas_vuelta = [
+            "From 9,483,920 Colombian pesos round trip total. Nonstop flight with Avianca. "
+            "Leaves Orlando International Airport at 1:45 PM on Sunday, December 27 and arrives at El Dorado International Airport at 5:55 PM on Sunday, December 27.",
+            "From 10,200,000 Colombian pesos round trip total. Nonstop flight with Avianca. "
+            "Leaves Orlando International Airport at 6:10 PM on Sunday, December 27 and arrives at El Dorado International Airport at 10:20 PM on Sunday, December 27.",
+        ]
+
+        class Localizador:
+            def __init__(self, hay=True):
+                self.hay = hay
+
+            @property
+            def first(self):
+                return self
+
+            def nth(self, n):
+                return self
+
+            def click(self, **k):
+                pass
+
+            def evaluate(self, script, **k):
+                pass
+
+            def filter(self, **k):
+                return self
+
+            def count(self):
+                return 1
+
+        class Pagina(_Falso):
+            url = "https://www.google.com/travel/flights/booking?hl=en"
+
+            def goto(self, *a, **k):
+                pass
+
+            def locator(self, *a, **k):
+                return Localizador()
+
+            def get_by_text(self, *a, **k):
+                return Localizador(False)
+
+            def eval_on_selector_all(self, selector, script):
+                return etiquetas_vuelta
+
+            def wait_for_url(self, *a, **k):
+                pass
+
+        reserva = b.link_reserva_google(Pagina(), v)
+        self.assertIsNotNone(reserva)
+        self.assertEqual(v.get("hora_regreso"), "1:45 PM")
+        self.assertEqual(v.get("llegada_regreso"), "5:55 PM")
+
+    def test_html_correo_muestra_horario_de_salida_y_de_vuelta(self):
+        v = {
+            "salida": "2026-12-22",
+            "regreso": "2026-12-27",
+            "noches": 5,
+            "aerolinea": "Avianca",
+            "hora": "8:20 AM",
+            "llegada_salida": "12:35 PM",
+            "hora_regreso": "1:45 PM",
+            "llegada_regreso": "5:55 PM",
+            "total": 9_483_920,
+            "precio_real": 9_483_920,
+            "basica": False,
+            "reserva": "https://reserva",
+            "url": "https://search",
+        }
+        html = b.html_correo("intro", [v], False)
+        self.assertIn("Ida:", html)
+        self.assertIn("sale 8:20 AM (llega 12:35 PM)", html)
+        self.assertIn("Vuelta:", html)
+        self.assertIn("sale 1:45 PM (llega 5:55 PM)", html)
+
+    def test_texto_recordatorio_muestra_horario_ida_y_vuelta(self):
+        v = {
+            "salida": "2026-12-22",
+            "regreso": "2026-12-27",
+            "noches": 5,
+            "aerolinea": "Avianca",
+            "hora": "8:20 AM",
+            "hora_regreso": "1:45 PM",
+            "total": 9_483_920,
+            "precio_real": 9_483_920,
+            "basica": False,
+            "reserva": "https://reserva",
+            "url": "https://search",
+        }
+        texto = b.texto_recordatorio([v])
+        self.assertIn("ida 8:20 AM · vuelta 1:45 PM", texto)
+
+    def test_detalle_muestra_horario_de_vuelta_si_existe(self):
+        v = {
+            "salida": "2026-12-22",
+            "regreso": "2026-12-27",
+            "noches": 5,
+            "aerolinea": "Avianca",
+            "hora": "8:20 AM",
+            "hora_regreso": "1:45 PM",
+            "total": 9_483_920,
+            "precio_real": 9_483_920,
+            "basica": False,
+            "reserva": "https://reserva",
+            "url": "https://search",
+            "insight": None,
+        }
+        _, texto = b.detalle([v], {})
+        self.assertIn("regresa 27 dic 1:45 PM", texto)
+        self.assertIn("ida 8:20 AM · vuelta 1:45 PM", texto)
+
+
 if __name__ == "__main__":
     unittest.main()
