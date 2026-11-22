@@ -460,6 +460,11 @@
       "fecha": "2026-11-21T21:22",
       "mejor": 9094960,
       "real": 9094960
+    },
+    {
+      "fecha": "2026-11-22T13:25",
+      "mejor": 9094960,
+      "real": 9094960
     }
   ],
   "bajo_tope": true,
@@ -467,5 +472,5 @@
   "ultimo_aviso_error": "2026-11-15",
   "ultimo_aviso_mail": null,
   "revisiones_omitidas_pendientes": [],
-  "ultima_omision_notificada": "2026-11-20T15:00"
+  "ultima_omision_notificada": "2026-11-22T09:00"
 }
