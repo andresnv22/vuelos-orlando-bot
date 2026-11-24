@@ -32,7 +32,7 @@ que ningún computador esté prendido.
 
 | Correo | Cuándo |
 |---|---|
-| 🔥 **¡Precio bueno!** | El precio real en la aerolínea, ida y vuelta en una sola reserva para los 4, queda por debajo del tope (menos de $10.000.000). Llega en cada revisión (cada 3 horas) mientras siga así. El precio "desde" de la búsqueda nunca basta, y el real se lee dos veces. |
+| 🔥 **¡Precio bueno!** | El precio real en la aerolínea, ida y vuelta en una sola reserva para los 4, queda por debajo del tope (menos de $9.000.000). Llega en cada revisión (cada 3 horas) mientras siga así. El precio "desde" de la búsqueda nunca basta, y el real se lee dos veces. |
 | ⬆️ **Subió el precio** | Una sola vez, cuando venía avisando y el precio real ya no está bajo el tope. Después no llega nada hasta que vuelva a bajar. |
 | ✈️ **Resumen del día** | A las 6pm, si ese día no salió otro aviso: el precio real más barato del día, para saber que el bot sigue vivo aunque el precio esté sobre el tope. |
 | ⚠️ **No se pudo revisar** / **no pude confirmar el precio real** | Google no devolvió resultados, o la página de la aerolínea no mostró el precio de una opción que en la búsqueda sale bajo el tope (máximo uno al día). |
@@ -51,7 +51,7 @@ Todo está en [`config.json`](config.json); no hace falta tocar el código:
 | `flexibilidad_dias` | Cuántos días antes o después se aceptan, en la ida y en la vuelta. |
 | `noches_min`, `noches_max` | Duración aceptable del viaje. |
 | `aerolineas` | Aerolíneas que se buscan: código IATA y nombre como sale en Google (`AV` Avianca, `LA` LATAM). |
-| `umbral_total_cop` | Tope del precio ida y vuelta **para todos**: se avisa si queda por debajo (hoy 10.000.000). |
+| `umbral_total_cop` | Tope del precio ida y vuelta **para todos**: se avisa si queda por debajo (hoy 9.000.000). |
 
 El bot se apaga solo el día antes de la última salida posible (23 dic). Después hay que borrar el
 despertador en [claude.ai/code/routines](https://claude.ai/code/routines), que sigue sonando aunque ya no haya nada que revisar.

@@ -576,8 +576,8 @@ class PruebaTope(unittest.TestCase):
         self.assertIsNone(b.motivo_umbral(b.UMBRAL_TOTAL))
         self.assertIsNotNone(b.motivo_umbral(b.UMBRAL_TOTAL - 1))
 
-    def test_tope_es_10_millones(self):
-        self.assertEqual(b.UMBRAL_TOTAL, 10_000_000)
+    def test_tope_es_9_millones(self):
+        self.assertEqual(b.UMBRAL_TOTAL, 9_000_000)
 
 
 class PruebaHorarios(unittest.TestCase):
