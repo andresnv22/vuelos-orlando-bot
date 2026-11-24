@@ -481,6 +481,12 @@
       "fecha": "2026-11-24T06:19",
       "mejor": 9211880,
       "real": 9506280
+    },
+    {
+      "fecha": "2026-11-24T09:22",
+      "mejor": 9521640,
+      "parcial": true,
+      "real": 9521640
     }
   ],
   "bajo_tope": true,
