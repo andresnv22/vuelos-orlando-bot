@@ -507,6 +507,10 @@
       "fecha": "2026-11-24T21:10",
       "mejor": 9521640,
       "real": 9521640
+    },
+    {
+      "fecha": "2026-11-25T12:11",
+      "mejor": 9742160
     }
   ],
   "bajo_tope": false,
@@ -514,5 +518,7 @@
   "ultimo_aviso_error": "2026-11-15",
   "ultimo_aviso_mail": null,
   "revisiones_omitidas_pendientes": [],
-  "ultima_omision_notificada": "2026-11-23T21:00"
+  "ultima_omision_notificada": "2026-11-25T09:00",
+  "fechas_pendientes": [],
+  "reservas_pendientes": []
 }
