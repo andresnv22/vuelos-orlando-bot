@@ -326,6 +326,18 @@ class PruebaCorreoYConfig(unittest.TestCase):
 
 
 class PruebaVigilancia(unittest.TestCase):
+    def test_prioriza_fecha_ideal_y_precio_cercano_al_tope(self):
+        ideal = [d.isoformat() for d in b.FECHAS_IDEALES]
+        otra = [d.isoformat() for d in b.COMBINACIONES[1]]
+        def vuelo(fechas, aerolinea, total):
+            return {"salida": fechas[0], "regreso": fechas[1], "aerolinea": aerolinea,
+                    "total": total}
+        vuelos = [vuelo(ideal, "Avianca", 8_500_000),
+                  vuelo(ideal, "LATAM", 8_900_000), vuelo(otra, "LATAM", 8_950_000)]
+        candidatos = b.candidatos_verificacion(vuelos)
+        self.assertEqual([(v["salida"], v["aerolinea"]) for v in candidatos],
+                         [(ideal[0], "LATAM"), (ideal[0], "Avianca"), (otra[0], "LATAM")])
+
     def test_detecta_una_franja_omitida_al_cerrar(self):
         estado = {"revisiones": [{"fecha": "2026-11-03T06:02", "mejor": 9_000_000}]}
         omitidas = b.revisiones_omitidas(estado, datetime(2026, 11, 3, 12, 0))

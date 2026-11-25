@@ -333,7 +333,7 @@ def mejores_por_fecha_y_aerolinea(vuelos):
     return list(mejores.values())
 
 
-def candidatos_verificacion(vuelos):
+def candidatos_verificacion(vuelos, pendientes=()):
     """Devuelve las dos aerolíneas de cada fecha candidata, con las fechas ideales primero.
 
     Cada fecha que amerita validar compara Avianca y LATAM si Google devolvió ambas. Si una de
@@ -343,19 +343,19 @@ def candidatos_verificacion(vuelos):
     por_fecha = {}
     for v in mejores_por_fecha_y_aerolinea(vuelos):
         por_fecha.setdefault((v["salida"], v["regreso"]), []).append(v)
-    fechas = sorted(
-        por_fecha,
-        key=lambda fecha: (
-            fecha != (FECHAS_IDEALES[0].isoformat(), FECHAS_IDEALES[1].isoformat()),
-            min(v["total"] for v in por_fecha[fecha]),
-            fecha,
-        ),
-    )
+    fechas_pendientes = {(v["salida"], v["regreso"]) for v in pendientes}
+    fechas = sorted(por_fecha, key=lambda fecha: (
+        fecha not in fechas_pendientes,
+        fecha != (FECHAS_IDEALES[0].isoformat(), FECHAS_IDEALES[1].isoformat()),
+        min(abs(v["total"] - UMBRAL_TOTAL) for v in por_fecha[fecha]),
+        min(v["total"] for v in por_fecha[fecha]), fecha,
+    ))
     seleccionadas = [fecha for fecha in fechas if any(vale_revisar(v["total"]) for v in por_fecha[fecha])]
     candidatos = []
     orden_aerolineas = {nombre: i for i, nombre in enumerate(AEROLINEAS.values())}
     for fecha in seleccionadas:
-        candidatos.extend(sorted(por_fecha[fecha], key=lambda v: (orden_aerolineas.get(v["aerolinea"], 99), v["total"])))
+        candidatos.extend(sorted(por_fecha[fecha], key=lambda v: (
+            abs(v["total"] - UMBRAL_TOTAL), orden_aerolineas.get(v["aerolinea"], 99))))
     return candidatos
 
 
@@ -374,14 +374,16 @@ def opciones_para_reservar(vuelos):
     return elegidos
 
 
-def verificar_precios(page, vuelos, plazo):
+def verificar_precios(page, vuelos, plazo, pendientes=()):
     """Confirma ambas aerolíneas de cada fecha candidata y devuelve lo que se revisó.
 
     No termina al encontrar la primera tarifa bajo el tope: la segunda aerolínea o una fecha
     posterior puede tener una oferta real menor. La alerta se construye después con la menor de
     todas las segundas lecturas confirmadas.
     """
-    candidatos = candidatos_verificacion(vuelos)
+    candidatos = candidatos_verificacion(vuelos, pendientes)
+    pendientes_clave = {(v["salida"], v["regreso"], v["aerolinea"]) for v in pendientes}
+    candidatos.sort(key=lambda v: (v["salida"], v["regreso"], v["aerolinea"]) not in pendientes_clave)
     for v in candidatos:
         if time.monotonic() >= plazo:
             break
@@ -1060,6 +1062,8 @@ def main():
     estado.setdefault("ultimo_aviso_error", None)
     estado.setdefault("ultimo_aviso_mail", None)
     estado.setdefault("revisiones_omitidas_pendientes", [])
+    estado.setdefault("fechas_pendientes", [])
+    estado.setdefault("reservas_pendientes", [])
 
     # Si el workflow no arrancó durante una franja, la siguiente ejecución lo detecta antes de
     # guardar su propia revisión. Se conserva como pendiente hasta que el aviso salga de verdad.
@@ -1073,7 +1077,10 @@ def main():
     vuelos, bloqueado = [], False
     with sync_playwright() as p:
         browser, page = abrir_navegador(p)
-        for salida, regreso in COMBINACIONES:
+        pendientes = {tuple(f) for f in estado["fechas_pendientes"]}
+        fechas_ordenadas = sorted(COMBINACIONES, key=lambda f: (
+            (f[0].isoformat(), f[1].isoformat()) not in pendientes, f != FECHAS_IDEALES, f))
+        for salida, regreso in fechas_ordenadas:
             if salida <= ahora.date():
                 continue
             if bloqueado or time.monotonic() >= plazo:
@@ -1109,7 +1116,7 @@ def main():
             # del tope, no hace falta abrir las páginas de reserva.
             hay_candidatos = vale_revisar(mejor["total"])
             if hay_candidatos:
-                candidatos = verificar_precios(page, vuelos, plazo)
+                candidatos = verificar_precios(page, vuelos, plazo, estado["reservas_pendientes"])
             if hay_candidatos or resumen:
                 for v in opciones_para_reservar(vuelos):  # links de lo que se va a mostrar
                     if "reserva" not in v and time.monotonic() < plazo:
@@ -1125,7 +1132,14 @@ def main():
                 motivo = motivo_umbral(precio_alerta)
             sin_confirmar = [v["total"] for v in candidatos if not v.get("precio_real")
                              and not v.get("solo_separados")]
+            reservas_pendientes = [v for v in candidatos if not v.get("precio_real")
+                                   and not v.get("solo_separados")]
+            estado["reservas_pendientes"] = [
+                {"salida": v["salida"], "regreso": v["regreso"], "aerolinea": v["aerolinea"]}
+                for v in reservas_pendientes
+            ]
         browser.close()
+    estado["fechas_pendientes"] = [[s.isoformat(), r.isoformat()] for s, r in fechas_sin_resultado]
 
     # Cada aviso lleva los cambios de estado que solo se guardan si de verdad sale,
     # así una alerta que no se pudo enviar se vuelve a intentar en la próxima revisión.
