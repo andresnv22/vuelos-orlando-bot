@@ -566,10 +566,15 @@
     {
       "fecha": "2026-11-27T15:10",
       "mejor": 9841880
+    },
+    {
+      "fecha": "2026-11-27T18:11",
+      "mejor": 9841880,
+      "real": 9841880
     }
   ],
   "bajo_tope": false,
-  "ultimo_resumen": "2026-11-26",
+  "ultimo_resumen": "2026-11-27",
   "ultimo_aviso_error": "2026-11-27",
   "ultimo_aviso_mail": null,
   "revisiones_omitidas_pendientes": [],
