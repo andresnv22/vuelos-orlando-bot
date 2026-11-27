@@ -558,6 +558,10 @@
       "fecha": "2026-11-27T09:22",
       "mejor": 9841880,
       "parcial": true
+    },
+    {
+      "fecha": "2026-11-27T14:53",
+      "mejor": 9841880
     }
   ],
   "bajo_tope": false,
@@ -566,11 +570,6 @@
   "ultimo_aviso_mail": null,
   "revisiones_omitidas_pendientes": [],
   "ultima_omision_notificada": "2026-11-25T09:00",
-  "fechas_pendientes": [
-    [
-      "2026-12-20",
-      "2026-12-26"
-    ]
-  ],
+  "fechas_pendientes": [],
   "reservas_pendientes": []
 }
